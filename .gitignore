@@ -1,0 +1,5 @@
+# Video/audio/feature files
+*.mp4
+*.npy
+*.csv
+*.parquet
