@@ -12,7 +12,7 @@
 #SBATCH --gres=gpu:1
 module purge
 
-input_file="./input_file.txt"
+input_file="./input_list.txt"
 
 while IFS= read -r line; do
     if [[ -z "$line" ]]; then
