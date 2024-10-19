@@ -11,3 +11,16 @@ To run the job, call "sbatch filename". To check on the job, call "squeue -u net
 To cancel a job, call "scancel -n job_name" to cancel all jobs for a name. If you want to cancel all your jobs, call "scancel -u netid".
 
 Again, the VACC knowledge base is a good place to go for any extra information.
+
+
+
+
+
+## Gian crazy notes
+sbatch ".sh file here"
+
+squeue -u "netid"
+
+scancel -u "netid" cancels all things you're running
+
+use dggpu

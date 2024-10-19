@@ -25,3 +25,10 @@ done < "$input_file"
 
 # Wait for all background jobs to finish
 wait
+
+
+
+
+# $HOME/miniconda3/envs/videosync3.10/bin/python desync_audio.py "$line" true &
+# python visual_features.py -i ../2_unzipped/$line/$line/
+    
