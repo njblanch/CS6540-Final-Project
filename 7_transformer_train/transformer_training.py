@@ -1,7 +1,7 @@
+from dual_input_transformer import DualInputTransformer
 from torch.utils.data import DataLoader
 import torch
 import torch.nn as nn
-from dual_input_transformer import DualInputTransformer
 
 
 if __name__ == "__main__":
