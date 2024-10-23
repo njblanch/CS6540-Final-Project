@@ -42,7 +42,6 @@ done
 for dir in "${non_empty_dirs[@]}"; do
     job_script=$(cat <<EOT
 #!/bin/bash
-
 #SBATCH --account=cs6540
 #SBATCH --job-name=${dir}_vis_feats
 #SBATCH --output=auto_log/${master_dir}/${dir}_output.log
@@ -50,20 +49,26 @@ for dir in "${non_empty_dirs[@]}"; do
 #SBATCH --ntasks=4
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=24GB
-#SBATCH --time=4:00:00
+#SBATCH --time=6:00:00
 #SBATCH --partition=dggpu
 #SBATCH --gres=gpu:1
 module purge
 
+set -x
+
 # Job info
-my_job_header
+# my_job_header
 
 script_loc="/gpfs2/classes/cs6540/AVSpeech/6_visual_features/visual_features.py"
 video_src="/gpfs2/classes/cs6540/AVSpeech/2_unzipped/${dir}/${dir}/"
 
-/gpfs1/home/g/c/gcercena/miniconda3/envs/dl/bin/python $script_loc -i $video_src
+echo "Executing Python script with command:"
+echo "/gpfs1/home/g/c/gcercena/miniconda3/envs/dl/bin/python \"\$script_loc\" -i \"\$video_src\""
+
+/gpfs1/home/g/c/gcercena/miniconda3/envs/dl/bin/python "$script_loc" -i "$video_src"
 EOT
 )
+
 
     # Submit the job
     echo "$job_script" | sbatch
