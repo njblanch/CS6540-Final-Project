@@ -8,7 +8,11 @@ from torch.utils.data import Dataset, DataLoader
 class VideoAudioDataset(Dataset):
     # This provides all features per video_id and clip number - will have to change data loading things
     def __init__(self, filenames, video_path, audio_path):
-        self.sub_clips = []
+        self.audio_features_list = []
+        self.video_features_list = []
+        self.y_offset_list = []
+        self.video_id_list = []
+        self.clip_number_list = []
 
         for filename in filenames:
             audio_csv = os.path.join(audio_path, filename + '.csv')  # Assuming CSV for audio
@@ -20,25 +24,42 @@ class VideoAudioDataset(Dataset):
             audio_data = pd.read_csv(audio_csv)
             video_data = pd.read_csv(video_csv)
 
-            # Group using videoid (if for some reason multiple things together) and also clip number
+            # Group using video_id and clip_number
             audio_groups = audio_data.groupby(['video_id', 'clip_number'])
             video_groups = video_data.groupby(['video_id', 'clip_number'])
 
-            # Iterate through and load audio features #TODO: change to load all features
+            # Process audio features
             for (video_id, clip_number), audio_group in audio_groups:
-                audio_features = torch.tensor(audio_group['audio_features'].tolist())  # Adjust based on actual column
-                self.sub_clips.append((video_id, clip_number, 'audio', audio_features))
-            # TODO: change to load all features
-            for (video_id, clip_number), video_group in video_groups:
-                video_features = torch.tensor(video_group['video_features'].tolist())  # Adjust based on actual column
-                self.sub_clips.append((video_id, clip_number, 'video', video_features))
+                if (video_id, clip_number) in video_groups.groups:
+                    video_group = video_groups.get_group((video_id, clip_number))
+
+                    # Ensure the number of rows match
+                    if len(audio_group) == len(video_group):
+                        audio_features = torch.tensor(
+                            audio_group.drop(columns=['video_id', 'video_number', 'frame_number']).values)  # All audio features
+                        video_features = torch.tensor(video_group.drop(
+                            columns=['video_id', 'video_number', 'frame_number', 'desync']).values)  # All video features
+                        y_offset = torch.tensor(video_group['desync'].values)  # Target variable
+
+                        # Extend lists
+                        self.audio_features_list.extend(audio_features)
+                        self.video_features_list.extend(video_features)
+                        self.y_offset_list.extend(y_offset)
+                        self.video_id_list.extend(video_id)
+                        self.clip_number_list.extend(clip_number)
 
     def __len__(self):
-        return len(self.sub_clips)
+        return len(self.audio_features_list)
 
     def __getitem__(self, idx):
-        video_id, clip_number, clip_type, features = self.sub_clips[idx]
-        return video_id, clip_number, clip_type, features
+        video_id = self.video_id_list[idx]
+        clip_number = self.clip_number_list[idx]
+
+        audio_features = self.audio_features_list[idx] if idx < len(self.audio_features_list) else None
+        video_features = self.video_features_list[idx] if idx < len(self.video_features_list) else None
+        y_offset = self.y_offset_list[idx] if idx < len(self.y_offset_list) else None
+
+        return video_id, clip_number, audio_features, video_features, y_offset
 
 
 def load_and_union_data(dir1, dir2):
@@ -55,8 +76,10 @@ def load_and_union_data(dir1, dir2):
     # Process second directory
     for filename in os.listdir(dir2):
         if filename.endswith('.csv'):
-            name_without_extension = os.path.splitext(os.path.basename(filename))[0]
-            all_filenames.append(name_without_extension)
+            file_path = os.path.join(dir2, filename)  # Full path for size check
+            if os.path.getsize(file_path) > 1922: # Ensure file has things in it
+                name_without_extension = os.path.splitext(os.path.basename(filename))[0]
+                all_filenames.append(name_without_extension)
 
     # Remove duplicates
     unique_filenames = list(set(all_filenames))
@@ -93,24 +116,4 @@ def load_dataset(video_path, audio_path):
 
 if __name__ == "__main__":
     # Use with singular files
-    train_audio_csv = 'path/to/train_audio.csv'
-    train_video_csv = 'path/to/train_video.csv'
-    val_audio_csv = 'path/to/val_audio.csv'
-    val_video_csv = 'path/to/val_video.csv'
-    test_audio_csv = 'path/to/test_audio.csv'
-    test_video_csv = 'path/to/test_video.csv'
-
-    # Create dataset instances
-    train_dataset = VideoAudioDataset(train_audio_csv, train_video_csv)
-    val_dataset = VideoAudioDataset(val_audio_csv, val_video_csv)
-    test_dataset = VideoAudioDataset(test_audio_csv, test_video_csv)
-
-    # Create DataLoader instances
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
-    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
-
-    # Example of accessing a single item from the dataset
-    for video_id, clip_number, clip_type, features in train_loader:
-        print(video_id, clip_number, clip_type, features.shape)  # Features will be a tensor
-        break  # Only print the first batch
+    pass
