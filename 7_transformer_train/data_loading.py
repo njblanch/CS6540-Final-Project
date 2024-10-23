@@ -59,7 +59,7 @@ class VideoAudioDataset(Dataset):
         video_features = self.video_features_list[idx] if idx < len(self.video_features_list) else None
         y_offset = self.y_offset_list[idx] if idx < len(self.y_offset_list) else None
 
-        return video_id, clip_number, audio_features, video_features, y_offset
+        return audio_features, video_features, y_offset
 
 
 def load_and_union_data(dir1, dir2):
@@ -95,25 +95,60 @@ def split_data(data, train_size=0.7, val_size=0.15):
 
     return train_data, val_data, test_data
 
-def load_dataset(video_path, audio_path):
+
+def load_dataset(video_path, audio_path, save=False, batch_size=32):
     # Load and union data
     combined_data = load_and_union_data(video_path, audio_path)
 
     # Split the data
     train_filenames, val_filenames, test_filenames = split_data(combined_data)
 
+    # save the filenames
+    if save:
+        with open('train_filenames.txt', 'w') as train_file:
+            for filename in train_filenames:
+                train_file.write(f"{filename}\n")
+
+        with open('val_filenames.txt', 'w') as val_file:
+            for filename in val_filenames:
+                val_file.write(f"{filename}\n")
+
+        with open('test_filenames.txt', 'w') as test_file:
+            for filename in test_filenames:
+                test_file.write(f"{filename}\n")
+
     # Create DataLoaders for each split (assuming the dataset class handles loading from the filenames)
     train_dataset = VideoAudioDataset(train_filenames, video_path, audio_path)
     val_dataset = VideoAudioDataset(val_filenames, video_path, audio_path)
     test_dataset = VideoAudioDataset(test_filenames, video_path, audio_path)
 
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
-    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
     return train_loader, val_loader, test_loader
 
 
 if __name__ == "__main__":
     # Use with singular files
-    pass
+    train_audio_csv = 'path/to/train_audio.csv'
+    train_video_csv = 'path/to/train_video.csv'
+    val_audio_csv = 'path/to/val_audio.csv'
+    val_video_csv = 'path/to/val_video.csv'
+    test_audio_csv = 'path/to/test_audio.csv'
+    test_video_csv = 'path/to/test_video.csv'
+
+    # Create dataset instances
+    train_dataset = VideoAudioDataset(train_audio_csv, train_video_csv)
+    val_dataset = VideoAudioDataset(val_audio_csv, val_video_csv)
+    test_dataset = VideoAudioDataset(test_audio_csv, test_video_csv)
+
+    # Create DataLoader instances
+    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+
+    # Example of accessing a single item from the dataset
+    for video_id, clip_number, clip_type, features in train_loader:
+        print(video_id, clip_number, clip_type, features.shape)  # Features will be a tensor
+        break  # Only print the first batch

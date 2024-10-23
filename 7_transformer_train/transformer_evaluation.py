@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from daul_input_transformer import DualInputTransformer
+from data_loading import VideoAudioDataset
 
 
 def evaluate_model(model, test_loader, criterion):
@@ -26,6 +27,12 @@ def evaluate_model(model, test_loader, criterion):
     return avg_test_loss, mse, mae
 
 
+def read_filenames(filename):
+    with open(filename, 'r') as file:
+        filenames = [line.strip() for line in file]
+    return filenames
+
+
 if __name__=="__main__":
     # Load model - Should mirror the training
     audio_dim = 50
@@ -36,7 +43,12 @@ if __name__=="__main__":
     dim_feedforward = 100
 
     # Load data
-    test_loader = ... # Fill in
+    audio_path = "/gpfs2/classes/cs6540/AVSpeech/5_audio/train"
+    video_path = "/gpfs2/classes/cs6540/AVSpeech/6_visual_features/train_dist"
+    test_filenames = read_filenames("test_filenames.txt")
+    test_dataset = VideoAudioDataset(test_filenames, video_path, audio_path)
+
+    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=True)
 
     # Initialize model, optimizer, and loss function
     model = DualInputTransformer(audio_dim, video_dim, n_heads, num_layers, d_model, dim_feedforward)

@@ -2,7 +2,7 @@ from dual_input_transformer import DualInputTransformer
 from torch.utils.data import DataLoader
 import torch
 import torch.nn as nn
-
+from data_loading import load_dataset
 
 if __name__ == "__main__":
     # I would recommend we use a validation set too - this helps with overfitting and tracking the model's overfitting
@@ -10,8 +10,14 @@ if __name__ == "__main__":
     final_model_path = "transformer_desync_model_final.pth"
     best_model_path = "transformer_desync_model_best.pth"
 
-    train_loader = ...  # Add data loading
-    val_loader = ... # Add data loading
+    audio_path = "/gpfs2/classes/cs6540/AVSpeech/5_audio/train"
+    video_path = "/gpfs2/classes/cs6540/AVSpeech/6_visual_features/train_dist"
+
+    train_data, val_data, test_data = load_dataset(video_path, audio_path)
+    print("Shapes!")
+    print(train_data[0].shape)
+    print(val_data[0].shape)
+    print(test_data[0].shape)
 
     # Hyperparameters
     num_epochs = 10
@@ -37,7 +43,7 @@ if __name__ == "__main__":
         model.train()
         total_loss = 0
 
-        for audio_features, video_features, target in train_loader:
+        for audio_features, video_features, target in train_data:
             optimizer.zero_grad()
 
             # Forward pass
@@ -51,19 +57,19 @@ if __name__ == "__main__":
             loss.backward()
             optimizer.step()
 
-        avg_loss = total_loss / len(train_loader)
+        avg_loss = total_loss / len(train_data)
         print(f"Epoch {epoch + 1}/{num_epochs}, Average Loss: {avg_loss:.4f}")
 
         # Validation Loop
         model.eval()
         total_val_loss = 0
         with torch.no_grad():
-            for audio_features, video_features, target in val_loader:
+            for audio_features, video_features, target in val_data:
                 outputs = model(audio_features, video_features)
                 loss = criterion(outputs.view(-1), target.view(-1))
                 total_val_loss += loss.item()
 
-        avg_val_loss = total_val_loss / len(val_loader)
+        avg_val_loss = total_val_loss / len(val_data)
         print(f"Validation Loss: {avg_val_loss:.4f}")
 
         # Save the best model
@@ -75,5 +81,4 @@ if __name__ == "__main__":
     # TODO: only saving after completion, use of a validation set could be beneficial
     torch.save(model.state_dict(), final_model_path)
 
-
-
+    print("Successfully finished training!")
