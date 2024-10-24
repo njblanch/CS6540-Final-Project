@@ -1,8 +1,10 @@
+#!/usr/bin/env python3
+
 import os
+import sys  # Added to handle stdout
 from tqdm import tqdm
 import torch
 import numpy as np
-import torch
 from torchvision import models, transforms
 import csv
 from collections import defaultdict
@@ -12,93 +14,15 @@ import pandas as pd
 import argparse
 import time
 
-print(f"\nCurrent time: {time.ctime()}")
-
-print(f"\nCude available: {torch.cuda.is_available()}")
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Using device: {device}")
-
 def parse_filename(filename):
     base_name = os.path.basename(filename)
-    parts = base_name.rsplit("_")
-    # if there are more than 4 parts, it means the filename has underscores in it
-    # keeping only the last 4 parts
-    if len(parts) > 4:
-        non_id_parts = parts[-3:]
-        # then, take all but the last 3 parts as the video id
-        # and concatenate them together, adding back the _
-        video_id = "_".join(parts[:-3])
-        clip_num, d, desync = non_id_parts
-    elif len(parts) == 4:
-        # print(parts)
-        video_id, clip_num, d, desync = parts
-    desync = desync.split(".")[0]  # removing .mp4
+    parts = base_name.rsplit("_", maxsplit=3)
+    if len(parts) == 4:
+        video_id, clip_num, d, desync_ext = parts
+    else:
+        raise ValueError(f"Unexpected filename format: {filename}")
+    desync = desync_ext.split(".")[0]  # removing .mp4
     return video_id, clip_num, desync
-
-# get args
-parser = argparse.ArgumentParser()
-parser.add_argument("-i", "--input_dir", type=str) # ../2_unzipped/***/***
-# parser.add_argument("-o", "--output_dir", type=str) # 
-parser.add_argument("-t", "--test", type=bool, default=False)
-parser.add_argument("-a", "--use_autoencoder", type=bool, default=False)
-args = parser.parse_args()
-
-if args.test:
-    output_dir = "./test_dist/"
-    video_dir = "../4_desynced/test_dist/"
-else:
-    output_dir = "./train_dist/"
-    video_dir = "../4_desynced/train_dist/"
-input_dir = args.input_dir
-
-os.makedirs(output_dir, exist_ok=True)
-output_dir = output_dir[:output_dir.rfind("/")]
-print(f"\nInput dir: {input_dir}")
-print(f"Output dir: {output_dir}")
-os.makedirs(output_dir, exist_ok=True)
-
-# Getting all video ids from input dir
-input_ids = set()
-print(f"\nFinding video ids in: {input_dir}")
-for root, _, files in os.walk(input_dir):
-    for file in files:
-        if file.endswith(".mp4"):
-            f_name = os.path.basename(file)
-            # removing anything after the last "_", as well as the _
-            f_name = f_name[:f_name.rfind("_")]
-            input_ids.add(f_name)
-
-print(f"Found {len(input_ids)} input ids")
-
-# if there is any video with basename that contians that string 
-# inside video_dir, add it to the set
-video_ids = set()
-print(f"\nLooking for desynced clips in: {video_dir}")
-for root, _, files in os.walk(video_dir):
-    for file in files:
-        if file.endswith(".mp4"):
-            f_name = os.path.basename(file)
-            video_ids.add(f_name)
-
-print(f"Found {len(video_ids)} video ids")
-            
-video_files = []
-# getting all video_ids that contain within their name
-# any input_ids
-print("\nChecking which videos to process")
-# using parse_filename to get the base video_id, then doing union between two sets
-for vf in video_ids:
-    video_id, _, _ = parse_filename(vf)
-    if video_id in input_ids:
-        video_files.append(vf)
-
-print(f"Found {len(video_files)} videos to process")
-
-print(f"\nTime after setup: {time.ctime()}")
-
-frame_rate = 15
-batch_size = 256
-use_autoencoder = args.use_autoencoder
 
 class Autoencoder(torch.nn.Module):
     def __init__(self, input_dim=1280, compressed_dim=128):
@@ -119,31 +43,27 @@ class Autoencoder(torch.nn.Module):
         reconstructed = self.decoder(compressed)
         return compressed, reconstructed
 
-
-# Adjust the feature extraction function to pass through the autoencoder
-def extract_features_with_autoencoder(
-    path, feature_extractor, preprocess, autoencoder, device, fps, batch_size=32
-):
-    frames = extract_frames(path, fps)
-    inputs = torch.stack([preprocess(frame) for frame in frames]).to(device)
-
-    features = []
-    with torch.no_grad():
-        for i in range(0, len(inputs), batch_size):
-            batch = inputs[i : i + batch_size]
-            batch_features = feature_extractor(batch)
-            batch_features = batch_features.view(batch_features.size(0), -1)
-
-            # Pass through autoencoder to reduce dimensions
-            compressed_features, _ = autoencoder(batch_features)
-            features.append(compressed_features.cpu().numpy())
-
-    features = np.concatenate(features, axis=0)
-    return features
-
+def extract_frames(video_path, frame_rate):
+    try:
+        vr = VideoReader(video_path, ctx=cpu())
+        total_frames = len(vr)
+        fps = vr.get_avg_fps()
+        if fps == 0:
+            fps = 15
+        interval = max(1, int(fps / frame_rate))
+        frame_indices = list(range(0, total_frames, interval))
+        frames = vr.get_batch(frame_indices).asnumpy()
+        # Convert to PIL Images
+        frames = [transforms.ToPILImage()(frame) for frame in frames]
+        return frames
+    except Exception as e:
+        print(f"Error extracting frames with decord from {video_path}: {e}", flush=True)
+        return None
 
 def extract_features(path, model, preprocess, device, fps, batch_size=32):
     frames = extract_frames(path, fps)
+    if frames is None:
+        return None
     inputs = torch.stack([preprocess(frame) for frame in frames]).to(device)
 
     features = []
@@ -160,118 +80,218 @@ def extract_features(path, model, preprocess, device, fps, batch_size=32):
 
     return features
 
-
-def extract_frames(video_path, frame_rate):
-    try:
-        vr = VideoReader(video_path, ctx=cpu())
-        total_frames = len(vr)
-        fps = vr.get_avg_fps()
-        if fps == 0:
-            fps = 15
-        interval = int(fps / frame_rate)
-        frame_indices = list(range(0, total_frames, interval))
-        frames = vr.get_batch(frame_indices).asnumpy()
-        # Convert to PIL Images
-        frames = [transforms.ToPILImage()(frame) for frame in frames]
-        return frames
-    except Exception as e:
-        print(f"Error extracting frames with decord from {video_path}: {e}")
-        return None
-
-
-def write_features_to_csv(
-    csv_path, video_id, clip_num, features, desync, existing=False
+def extract_features_with_autoencoder(
+    path, feature_extractor, preprocess, autoencoder, device, fps, batch_size=32
 ):
-    num_features = features.shape[1]
-    mode = "a" if existing else "w"
-    with open(csv_path, mode, newline="") as f:
-        writer = csv.writer(f)
-        if not existing:
-            header = ["video_id", "video_number", "frame_number", "desync"] + [
-                f"feature_{i}" for i in range(num_features)
-            ]
-            writer.writerow(header)
-        for frame_num, feature in enumerate(features):
-            row = [video_id, clip_num, frame_num, desync] + feature.tolist()
-            writer.writerow(row)
+    frames = extract_frames(path, fps)
+    if frames is None:
+        return None
+    inputs = torch.stack([preprocess(frame) for frame in frames]).to(device)
 
+    features = []
+    with torch.no_grad():
+        for i in range(0, len(inputs), batch_size):
+            batch = inputs[i : i + batch_size]
+            batch_features = feature_extractor(batch)
+            batch_features = batch_features.view(batch_features.size(0), -1)
 
-model = models.efficientnet_v2_s(pretrained=True)
-model.eval()
-model.to(device)
+            # Pass through autoencoder to reduce dimensions
+            compressed_features, _ = autoencoder(batch_features)
+            features.append(compressed_features.cpu().numpy())
 
-# removing the classification to get the feature extractor
-feature_extractor = torch.nn.Sequential(*list(model.children())[:-1])
-feature_extractor.to(device)
+    features = np.concatenate(features, axis=0)
+    return features
 
-dummy_input = torch.randn(1, 3, 224, 224).to(device)
-with torch.no_grad():
-    output = feature_extractor(dummy_input)
-
-print(f"\nThe output of the model is (1280 is non-autoencoded:")
-print(f"Model output shape: {output.shape}\n")
-
-# preprocessing for ENV2
-preprocess = transforms.Compose(
-    [
-        transforms.Resize(256),
-        transforms.CenterCrop(224),
-        transforms.ToTensor(),
-        transforms.Normalize(  # these are from ImageNet
-            mean=[0.485, 0.456, 0.406],  # which is what the
-            std=[0.229, 0.224, 0.225],  # model was trained on
-        ),
+def write_features_to_parquet(parquet_path, all_features):
+    if not all_features:
+        return
+    # Determine the number of feature columns
+    feature_length = len(all_features[0]) - 4
+    columns = ["video_id", "clip_num", "frame_number", "desync"] + [
+        f"feature_{i}" for i in range(feature_length)
     ]
-)
+    df = pd.DataFrame(all_features, columns=columns)
+    df.to_parquet(parquet_path, index=False)
+    print(f"Saved features to {parquet_path}", flush=True)
 
-if use_autoencoder:
-    autoencoder = Autoencoder(input_dim=1280, compressed_dim=128)
-    autoencoder.to(device)
-else:
-    autoencoder = None
+def main():
+    print(f"\nCurrent time: {time.ctime()}", flush=True)
 
-# video_files = [f for f in os.listdir(video_dir) if f.endswith(".mp4")]
+    print(f"\nCUDA available: {torch.cuda.is_available()}", flush=True)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}", flush=True)
 
-# going across all ids
-grouped_videos = defaultdict(list)
-for vf in video_files:
-    video_id, clip_num, desync = parse_filename(vf)
-    # print(video_id, clip_num, desync)
-    if video_id is not None:
-        grouped_videos[video_id].append((vf, clip_num, desync))
+    # Argument parsing
+    parser = argparse.ArgumentParser(description="Extract visual features from videos.")
+    parser.add_argument(
+        "-i",
+        "--input_dir",
+        type=str,
+        nargs='+',
+        required=True,
+        help="Input directories containing videos.",
+    )
+    parser.add_argument(
+        "-t",
+        "--test",
+        action='store_true',
+        default=False,
+        help="Enable test mode.",
+    )
+    parser.add_argument(
+        "-a",
+        "--use_autoencoder",
+        action='store_true',
+        default=False,
+        help="Use autoencoder for feature compression.",
+    )
+    args = parser.parse_args()
 
-# going over each group of clips for a given video_id
-for video_id, videos in tqdm(grouped_videos.items()):
-    all_features = []
-    for video_file, clip_num, desync in videos:
-        vid_path = os.path.join(video_dir, video_file)
-        # check if autoencoder exists
-        if autoencoder is not None:
-            feats = extract_features_with_autoencoder(
-                vid_path, feature_extractor, preprocess, autoencoder, device, frame_rate, batch_size
-            )
-        else:
-            feats = extract_features(
-                vid_path, feature_extractor, preprocess, device, frame_rate, batch_size
-            )
+    # Define output and video directories based on test flag
+    if args.test:
+        output_dir = "./test_dist/"
+        video_dir = "../4_desynced/test_dist/"
+    else:
+        output_dir = "./train_dist/"
+        video_dir = "../4_desynced/train_dist/"
 
-        if feats is None:
-            print(f"Error extracting features from: {vid_path}")
-            continue
+    input_dirs = args.input_dir
 
-        # Adding features and metadata
-        for frame_num, feature in enumerate(feats):
-            all_features.append(
-                [video_id, clip_num, frame_num, desync] + feature.tolist()
-            )
+    # Print all input directories
+    print(f"\nInput directories: {input_dirs}", flush=True)
 
-    # Writing all clips to CSV at a time
-    if all_features:
-        columns = ["video_id", "video_number", "frame_number", "desync"] + [
-            f"feature_{i}" for i in range(len(all_features[0]) - 4)
+    # Ensure output directory exists
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"\nOutput dir: {output_dir}", flush=True)
+
+    # Getting all video ids from input dirs
+    input_ids = set()
+    print(f"\nFinding video ids in input directories:", flush=True)
+    for input_dir in input_dirs:
+        for root, _, files in os.walk(input_dir):
+            for file in files:
+                if file.endswith(".mp4"):
+                    f_name = os.path.basename(file)
+                    # removing anything after the last "_", as well as the _
+                    if "_" in f_name:
+                        f_name = f_name[:f_name.rfind("_")]
+                        input_ids.add(f_name)
+
+    print(f"Found {len(input_ids)} input ids", flush=True)
+
+    # Finding desynced clips in video_dir
+    video_ids = set()
+    print(f"\nLooking for desynced clips in: {video_dir}", flush=True)
+    for root, _, files in os.walk(video_dir):
+        for file in files:
+            if file.endswith(".mp4"):
+                f_name = os.path.basename(file)
+                video_ids.add(f_name)
+
+    print(f"Found {len(video_ids)} video ids", flush=True)
+
+    # Filtering video files to process
+    video_files = []
+    print("\nChecking which videos to process", flush=True)
+    for vf in video_ids:
+        try:
+            video_id, clip_num, desync = parse_filename(vf)
+            if video_id in input_ids:
+                video_files.append(vf)
+        except ValueError as e:
+            print(e, flush=True)
+
+    print(f"Found {len(video_files)} videos to process", flush=True)
+
+    print(f"\nTime after setup: {time.ctime()}", flush=True)
+
+    frame_rate = 15
+    batch_size = 256
+    use_autoencoder = args.use_autoencoder
+
+    # Initialize model
+    model = models.efficientnet_v2_s(pretrained=True)
+    model.eval()
+    model.to(device)
+
+    # Removing the classification layer to get the feature extractor
+    feature_extractor = torch.nn.Sequential(*list(model.children())[:-1])
+    feature_extractor.to(device)
+
+    dummy_input = torch.randn(1, 3, 224, 224).to(device)
+    with torch.no_grad():
+        output = feature_extractor(dummy_input)
+
+    print(f"\nThe output of the model is (1280 is non-autoencoded):", flush=True)
+    print(f"Model output shape: {output.shape}\n", flush=True)
+
+    # Preprocessing steps
+    preprocess = transforms.Compose(
+        [
+            transforms.Resize(256),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            transforms.Normalize(  # ImageNet standards
+                mean=[0.485, 0.456, 0.406],
+                std=[0.229, 0.224, 0.225],
+            ),
         ]
-        df = pd.DataFrame(all_features, columns=columns)
-        parquet_path = os.path.join(output_dir, f"{video_id}.parquet")
-        # print saving location
-        print(parquet_path)
-        df.to_parquet(parquet_path, index=False)
+    )
+
+    # Initialize autoencoder if required
+    if use_autoencoder:
+        autoencoder = Autoencoder(input_dim=1280, compressed_dim=128)
+        autoencoder.to(device)
+    else:
+        autoencoder = None
+
+    # Group video files by video_id
+    video_dict = defaultdict(list)
+    for vf in video_files:
+        try:
+            video_id, clip_num, desync = parse_filename(vf)
+            video_dict[video_id].append((vf, clip_num, desync))
+        except ValueError as e:
+            print(e, flush=True)
+
+    print(f"\nProcessing {len(video_dict)} unique video_ids", flush=True)
+
+    # Process each video_id
+    for video_id in tqdm(video_dict, desc="Processing Video IDs", file=sys.stdout):
+        all_features = []
+        clips = video_dict[video_id]
+        for vf, clip_num, desync in clips:
+            vid_path = os.path.join(video_dir, vf)
+            # Extract features
+            if autoencoder is not None:
+                feats = extract_features_with_autoencoder(
+                    vid_path, feature_extractor, preprocess, autoencoder, device, frame_rate, batch_size
+                )
+            else:
+                feats = extract_features(
+                    vid_path, feature_extractor, preprocess, device, frame_rate, batch_size
+                )
+
+            if feats is None:
+                print(f"Error extracting features from: {vid_path}", flush=True)
+                continue
+
+            # Adding features and metadata
+            for frame_num, feature in enumerate(feats):
+                all_features.append(
+                    [video_id, clip_num, frame_num, desync] + feature.tolist()
+                )
+
+        if all_features:
+            # Create a unique Parquet file name per video_id
+            parquet_filename = f"{video_id}.parquet"
+            parquet_path = os.path.join(output_dir, parquet_filename)
+            write_features_to_parquet(parquet_path, all_features)
+            print(f"Finished processing video_id: {video_id}", flush=True)
+        else:
+            print(f"No features extracted for video_id: {video_id}", flush=True)
+
+    print(f"\nAll videos processed. Time: {time.ctime()}", flush=True)
+
+if __name__ == "__main__":
+    main()
