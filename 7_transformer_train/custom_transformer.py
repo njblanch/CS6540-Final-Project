@@ -13,13 +13,11 @@ class DualInputTransformer(nn.Module):
         self.transformer_encoder = TransformerEncoder(encoder_layers, num_layers)
         self.fc_out = nn.Linear(d_model, 1)  # Output for predicting desync frames
 
-    def forward(self, audio_features, video_features):
-        audio_embedded = self.audio_embedding(audio_features)
-        video_embedded = self.video_embedding(video_features)
+    def forward(self, features):
+        combined = self.audio_embedding(features)
 
         # Combine the features
-        combined_features = audio_embedded + video_embedded
-        transformer_output = self.transformer_encoder(combined_features)
+        transformer_output = self.transformer_encoder(combined)
 
         # Output layer
         return self.fc_out(transformer_output.mean(dim=1))
