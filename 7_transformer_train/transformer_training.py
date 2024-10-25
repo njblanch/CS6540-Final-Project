@@ -13,7 +13,7 @@ if __name__ == "__main__":
     audio_path = "/gpfs2/classes/cs6540/AVSpeech/5_audio/train"
     video_path = "/gpfs2/classes/cs6540/AVSpeech/6_visual_features/train_dist"
 
-    train_data, val_data, test_data = load_dataset(video_path, audio_path, save=True, max_data = {"train": 50, "test": 10, "val": 10}) # Save train test split
+    train_data, val_data, test_data = load_dataset(video_path, audio_path, save=True, max_data={"train": 50, "test": 10, "val": 10}) # Save train test split
     print("Shapes!", flush=True)
     print(len(train_data))
     print(len(val_data))
@@ -23,16 +23,16 @@ if __name__ == "__main__":
     # print(test_data[0].shape, flush=True)
 
     # Hyperparameters
-    num_epochs = 10
+    num_epochs = 100
     batch_size = 32
-    learning_rate = 1e-4
+    learning_rate = 1e-3
 
-    audio_dim = 119 # TODO: Set this
+    audio_dim = 118 # TODO: Set this
     video_dim = 1280
-    n_heads = 8 # Needs to be d_model/n_heads is an int
+    n_heads = 6 # Needs to be d_model/n_heads is an int
     num_layers = 2 # Change as needed
-    d_model = 80 # audio_dim + video_dim
-    dim_feedforward = 100 # Change as needed
+    d_model = audio_dim + video_dim # audio_dim + video_dim
+    dim_feedforward = 256 # Change as needed
 
     # Initialize model, optimizer, and loss function
     model = DualInputTransformer(audio_dim, video_dim, n_heads, num_layers, d_model, dim_feedforward)
@@ -47,17 +47,20 @@ if __name__ == "__main__":
         model.train()
         total_loss = 0
 
-        for features, target in train_data:
+        for features, attention_mask, target in train_data:
             optimizer.zero_grad()
 
-            # Forward pass
-            outputs = model(features)
+            # Forward pass, using the attention mask to ignore padding
+            output = model(features, src_key_padding_mask=attention_mask)
+            # Compute loss and backpropagate
+            loss = criterion(output.view(-1).float(), target.view(-1).float())
+            # print(output)
+            # print(target)
 
-            # Compute loss
-            loss = criterion(outputs.view(-1), target.view(-1))
             total_loss += loss.item()
 
-            # Backward pass
+            loss.float()
+
             loss.backward()
             optimizer.step()
 
@@ -68,8 +71,11 @@ if __name__ == "__main__":
         model.eval()
         total_val_loss = 0
         with torch.no_grad():
-            for features, target in val_data:
-                outputs = model(features)
+            for features, attention_mask, target in val_data:
+                # Forward pass, using the attention mask to ignore padding
+                outputs = model(features, src_key_padding_mask=attention_mask)
+
+                # Compute the loss
                 loss = criterion(outputs.view(-1), target.view(-1))
                 total_val_loss += loss.item()
 
