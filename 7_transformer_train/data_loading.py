@@ -16,13 +16,26 @@ class VideoAudioDataset(Dataset):
         self.video_id_list = []
         self.clip_number_list = []
         self.max_length = max_length
-        self.mean = None
-        self.std = None
 
         for filename in filenames:
             audio_csv = os.path.join(audio_path, filename + '.csv')  # Assuming CSV for audio
             video_parquet = os.path.join(video_path, filename + '.parquet')  # Assuming parquet for video
             self.process_data(audio_csv, video_parquet)
+
+        self.mean_audio = torch.mean(torch.cat(self.audio_features_list), dim=0)
+        self.std_audio = torch.std(torch.cat(self.audio_features_list), dim=0)
+        self.mean_video = torch.mean(torch.cat(self.video_features_list), dim=0)
+        self.std_video = torch.std(torch.cat(self.video_features_list), dim=0)
+
+        # Assuming audio_features_list and video_features_list contain all tensors
+        all_audio_features = torch.cat(self.audio_features_list)
+        all_video_features = torch.cat(self.video_features_list)
+
+        # Compute global min and max for audio and video features
+        self.audio_min = all_audio_features.min(dim=0).values
+        self.audio_max = all_audio_features.max(dim=0).values
+        self.video_min = all_video_features.min(dim=0).values
+        self.video_max = all_video_features.max(dim=0).values
 
     def process_data(self, audio_csv, video_csv):
         if os.path.exists(audio_csv) and os.path.exists(video_csv):
@@ -45,8 +58,15 @@ class VideoAudioDataset(Dataset):
                     audio_features = torch.tensor(
                         audio_group.drop(
                             columns=['video_id', 'video_number', 'frame_number']).astype(float).values)  # All audio features
+
                     video_features = torch.tensor(video_group.drop(
                         columns=['video_id', 'clip_num', 'frame_number', 'desync']).astype(float).values)  # All video features
+
+                    if audio_features.dtype != torch.float32:
+                        audio_features = audio_features.float()
+
+                    if video_features.dtype != torch.float32:
+                        video_features = video_features.float()
 
                     # Ensure the number of rows match by trimming or padding
                     min_length = min(len(audio_features), len(video_features))
@@ -80,18 +100,17 @@ class VideoAudioDataset(Dataset):
         audio_features = self.audio_features_list[idx] if idx < len(self.audio_features_list) else None
         video_features = self.video_features_list[idx] if idx < len(self.video_features_list) else None
 
-        # Only pad if we aren't calculating mean and stddev
-        # if self.mean is not None and self.std is not None:
+        # audio_features = (audio_features - self.mean_audio) / (self.std_audio + 1e-8)
+        # video_features = (video_features - self.mean_video) / (self.std_video + 1e-8)
+
+        audio_features = min_max_normalize_global(audio_features, self.audio_min, self.audio_max)
+        video_features = min_max_normalize_global(video_features, self.video_min, self.video_max)
+
+        # Pad audio and video
         padded_audio = self.pad_or_truncate(audio_features, self.max_length).float()
         padded_video = self.pad_or_truncate(video_features, self.max_length).float()
-        # else:
-        #     padded_audio = audio_features
-        #     padded_video = video_features
 
         combined_features = torch.cat((padded_audio, padded_video), dim=-1)
-
-        if self.mean is not None and self.std is not None:
-            combined_features = normalize_tensor(combined_features, self.mean, self.std)
 
         # attention_mask = self.create_attention_mask(len(combined_features), self.max_length)
 
@@ -121,6 +140,10 @@ class VideoAudioDataset(Dataset):
             pad = torch.zeros(max_length - length, dtype=torch.bool)
             mask = torch.cat((mask, pad))
         return mask
+
+
+def min_max_normalize_global(tensor, tensor_min, tensor_max):
+    return 2 * (tensor - tensor_min) / (tensor_max - tensor_min + 1e-8) - 1
 
 
 def normalize_tensor(tensor, mean, std):
@@ -217,6 +240,7 @@ def load_dataset(video_path, audio_path, max_data=None, save=False, batch_size=3
 
     # limit dataset sizes
     if not skip_downsample:
+        print(f"Downsampling: {max_data}")
         if len(train_filenames) > max_data["train"]:
             train_filenames = random.sample(train_filenames, max_data["train"])
 
@@ -249,20 +273,6 @@ def load_dataset(video_path, audio_path, max_data=None, save=False, batch_size=3
     print(f"Train dataset size: {len(train_dataset)}")
     print(f"Validation dataset size: {len(val_dataset)}")
     print(f"Test dataset size: {len(test_dataset)}")
-
-    # Calculate mean and std from the training dataset
-    mean, std = calculate_mean_std(train_dataset)
-    train_dataset.mean = mean
-    train_dataset.std = std
-
-    mean, std = calculate_mean_std(val_dataset)
-    val_dataset.mean = mean
-    val_dataset.std = std
-
-    mean, std = calculate_mean_std(test_dataset)
-    test_dataset.mean = mean
-    test_dataset.std = std
-
 
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)

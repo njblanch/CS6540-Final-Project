@@ -1,4 +1,4 @@
-from custom_transformer import DualInputTransformer
+from custom_transformer import DualInputTransformer, MultimodalTransformer
 from torch.utils.data import DataLoader
 import torch
 import torch.nn as nn
@@ -13,7 +13,7 @@ if __name__ == "__main__":
     audio_path = "/gpfs2/classes/cs6540/AVSpeech/5_audio/train"
     video_path = "/gpfs2/classes/cs6540/AVSpeech/6_visual_features/train_dist"
 
-    train_data, val_data, test_data = load_dataset(video_path, audio_path, save=True, max_data={"train": 50, "test": 10, "val": 10}) # Save train test split
+    train_data, val_data, test_data = load_dataset(video_path, audio_path, save=True, max_data=None)# {"train": 50, "test": 10, "val": 10}) # Save train test split
     print("Shapes!", flush=True)
     print(len(train_data))
     print(len(val_data))
@@ -25,17 +25,22 @@ if __name__ == "__main__":
     # Hyperparameters
     num_epochs = 100
     batch_size = 32
-    learning_rate = 1e-3
+    learning_rate = 1e-5
 
-    audio_dim = 118 # TODO: Set this
+    audio_dim = 118
     video_dim = 1280
     n_heads = 6 # Needs to be d_model/n_heads is an int
-    num_layers = 2 # Change as needed
+    num_layers = 6 # Change as needed
     d_model = audio_dim + video_dim # audio_dim + video_dim
     dim_feedforward = 256 # Change as needed
 
     # Initialize model, optimizer, and loss function
-    model = DualInputTransformer(audio_dim, video_dim, n_heads, num_layers, d_model, dim_feedforward)
+    # model = DualInputTransformer(audio_dim, video_dim, n_heads, num_layers, d_model, dim_feedforward)
+    model = MultimodalTransformer(features_dim=d_model, nhead=n_heads, num_layers=num_layers, d_model=d_model,
+                                  output_dim=1)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+
     print("after loading")
 
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
@@ -49,21 +54,29 @@ if __name__ == "__main__":
 
         for features, attention_mask, target in train_data:
             optimizer.zero_grad()
+            features.to(device)
+            attention_mask.to(device)
+            target.to(device)
 
             # Forward pass, using the attention mask to ignore padding
-            output = model(features, src_key_padding_mask=attention_mask)
+            # output = model(features, src_key_padding_mask=attention_mask)
+            output = model(features, src_mask=attention_mask)
             # Compute loss and backpropagate
+
             loss = criterion(output.view(-1).float(), target.view(-1).float())
             # print(output)
-            # print(target)
-
+            # print(target, flush=True)
             total_loss += loss.item()
 
             loss.float()
 
             loss.backward()
-            optimizer.step()
 
+            # Gradient clipping
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+            optimizer.step()
+        # print(total_loss)
         avg_loss = total_loss / len(train_data)
         print(f"Epoch {epoch + 1}/{num_epochs}, Average Loss: {avg_loss:.4f}", flush=True)
 
@@ -73,7 +86,11 @@ if __name__ == "__main__":
         with torch.no_grad():
             for features, attention_mask, target in val_data:
                 # Forward pass, using the attention mask to ignore padding
-                outputs = model(features, src_key_padding_mask=attention_mask)
+                features.to(device)
+                attention_mask.to(device)
+                target.to(device)
+                # outputs = model(features, src_key_padding_mask=attention_mask)
+                outputs = model(features, src_mask=attention_mask)
 
                 # Compute the loss
                 loss = criterion(outputs.view(-1), target.view(-1))
