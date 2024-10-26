@@ -87,7 +87,8 @@ for ((g=1; g<=num_groups; g++)); do
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32GB
 #SBATCH --time=24:00:00
-#SBATCH --partition=bluemoon
+#SBATCH --partition=dggpu
+#SBATCH --gres=gpu:1
 
 module purge
 

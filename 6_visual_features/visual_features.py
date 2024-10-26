@@ -2,15 +2,15 @@
 
 import os
 import sys  # Added to handle stdout
-from tqdm import tqdm
-import torch
-import numpy as np
-from torchvision import models, transforms
+from tqdm import tqdm # type: ignore
+import torch # type: ignore
+import numpy as np # type: ignore
+from torchvision import models, transforms # type: ignore
 import csv
 from collections import defaultdict
-from decord import VideoReader
-from decord import cpu
-import pandas as pd
+from decord import VideoReader # type: ignore
+from decord import cpu # type: ignore
+import pandas as pd # type: ignore
 import argparse
 import time
 
@@ -145,7 +145,18 @@ def main():
         default=False,
         help="Use autoencoder for feature compression.",
     )
+    parser.add_argument(
+        "-s",
+        "--autoencoder_size",
+        type=int,
+        default=128,
+        help="Size of the compressed features.",
+    )
     args = parser.parse_args()
+
+    # if -a is true, then -s must be provided
+    if args.use_autoencoder and not args.autoencoder_size:
+        parser.error("Autoencoder size must be provided when using autoencoder.")
 
     # Define output and video directories based on test flag
     if args.test:
@@ -159,6 +170,13 @@ def main():
 
     # Print all input directories
     print(f"\nInput directories: {input_dirs}", flush=True)
+
+    # if autoencoder is true, append "_autoencoder_size" to output_dir
+    if args.use_autoencoder:
+        # remove the trailing / if it exists
+        if output_dir.endswith("/"):
+            output_dir = output_dir[:-1]
+        output_dir += f"_{args.autoencoder_size}/"
 
     # Ensure output directory exists
     os.makedirs(output_dir, exist_ok=True)
@@ -218,12 +236,11 @@ def main():
     feature_extractor = torch.nn.Sequential(*list(model.children())[:-1])
     feature_extractor.to(device)
 
-    dummy_input = torch.randn(1, 3, 224, 224).to(device)
-    with torch.no_grad():
-        output = feature_extractor(dummy_input)
-
-    print(f"\nThe output of the model is (1280 is non-autoencoded):", flush=True)
-    print(f"Model output shape: {output.shape}\n", flush=True)
+    # dummy_input = torch.randn(1, 3, 224, 224).to(device)
+    # with torch.no_grad():
+    #     output = feature_extractor(dummy_input)
+    # print(f"\nThe output of the model is (1280 is non-autoencoded): {output.shape}", flush=True)
+    # print(f"Model output shape: {output.shape}\n", flush=True)
 
     # Preprocessing steps
     preprocess = transforms.Compose(
@@ -240,7 +257,7 @@ def main():
 
     # Initialize autoencoder if required
     if use_autoencoder:
-        autoencoder = Autoencoder(input_dim=1280, compressed_dim=128)
+        autoencoder = Autoencoder(input_dim=1280, compressed_dim=args.autoencoder_size)
         autoencoder.to(device)
     else:
         autoencoder = None
