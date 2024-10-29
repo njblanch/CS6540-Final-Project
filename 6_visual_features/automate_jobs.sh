@@ -87,8 +87,7 @@ for ((g=1; g<=num_groups; g++)); do
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32GB
 #SBATCH --time=24:00:00
-#SBATCH --partition=dggpu
-#SBATCH --gres=gpu:1
+#SBATCH --partition=bluemoon
 
 module purge
 
@@ -102,10 +101,10 @@ conda activate "${conda_env}"
 script_loc="${python_script}"
 
 echo "Executing Python script with command:"
-echo "/gpfs1/home/g/c/gcercena/miniconda3/envs/dl/bin/python \"\$script_loc\" -i ${input_dirs_str}"
+echo "/gpfs1/home/g/c/gcercena/miniconda3/envs/dl/bin/python \"\$script_loc\" -i ${input_dirs_str} -a -s 256"
 
 # Execute the Python script with multiple input directories
-/gpfs1/home/g/c/gcercena/miniconda3/envs/dl/bin/python "\$script_loc" -i ${input_dirs_str}
+/gpfs1/home/g/c/gcercena/miniconda3/envs/dl/bin/python "\$script_loc" -i ${input_dirs_str} -a -s 256
 EOT
 )
 
