@@ -4,16 +4,24 @@ import torch
 import torch.nn as nn
 from data_loading import load_dataset
 
+
+def variance_regularization(predictions, alpha=0.01):
+    variance = torch.var(predictions)
+
+    # Regularization term
+    return alpha * (1.0 / (variance + 1e-6))
+
+
 if __name__ == "__main__":
     # I would recommend we use a validation set too - this helps with overfitting and tracking the model's overfitting
     # a lot easier. This logic is added in the training loop, saves models of best loss
-    final_model_path = "transformer_desync_model_final.pth"
-    best_model_path = "transformer_desync_model_best.pth"
+    final_model_path = "transformer_desync_model100_final.pth"
+    best_model_path = "transformer_desync_model100_best.pth"
 
     audio_path = "/gpfs2/classes/cs6540/AVSpeech/5_audio/train"
     video_path = "/gpfs2/classes/cs6540/AVSpeech/6_visual_features/train_dist"
 
-    train_data, val_data, test_data = load_dataset(video_path, audio_path, save=True, max_data=None)# {"train": 50, "test": 10, "val": 10}) # Save train test split
+    train_data, val_data, test_data = load_dataset(video_path, audio_path, save=True, max_data=None)#{"train": 50, "test": 10, "val": 10}) # Save train test split
     print("Shapes!", flush=True)
     print(len(train_data))
     print(len(val_data))
@@ -24,8 +32,8 @@ if __name__ == "__main__":
 
     # Hyperparameters
     num_epochs = 100
-    batch_size = 32
-    learning_rate = 1e-5
+    batch_size = 64
+    learning_rate = 1e-4
 
     audio_dim = 118
     video_dim = 1280
@@ -36,10 +44,10 @@ if __name__ == "__main__":
 
     # Initialize model, optimizer, and loss function
     # model = DualInputTransformer(audio_dim, video_dim, n_heads, num_layers, d_model, dim_feedforward)
+    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cpu")
     model = MultimodalTransformer(features_dim=d_model, nhead=n_heads, num_layers=num_layers, d_model=d_model,
-                                  output_dim=1)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device)
+                                  output_dim=1, device=device)
 
     print("after loading")
 
@@ -50,7 +58,8 @@ if __name__ == "__main__":
     # Training Loop
     for epoch in range(num_epochs):
         model.train()
-        total_loss = 0
+        total_loss = 0.0
+        total_loss2 = 0.0
 
         for features, attention_mask, target in train_data:
             optimizer.zero_grad()
@@ -60,25 +69,30 @@ if __name__ == "__main__":
 
             # Forward pass, using the attention mask to ignore padding
             # output = model(features, src_key_padding_mask=attention_mask)
-            output = model(features, src_mask=attention_mask)
+            output = model(features, src_mask=attention_mask).view(-1).float()
             # Compute loss and backpropagate
 
-            loss = criterion(output.view(-1).float(), target.view(-1).float())
+            loss = criterion(output, target.view(-1).float())
             # print(output)
             # print(target, flush=True)
-            total_loss += loss.item()
 
             loss.float()
+            total_loss2 += loss.item()
 
+            loss += variance_regularization(output, alpha=1.0)
+
+            total_loss += loss.item()
             loss.backward()
 
             # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
             optimizer.step()
         # print(total_loss)
         avg_loss = total_loss / len(train_data)
+        avg_loss2 = total_loss2 / len(train_data)
         print(f"Epoch {epoch + 1}/{num_epochs}, Average Loss: {avg_loss:.4f}", flush=True)
+        print(f"Epoch {epoch + 1}/{num_epochs}, Average Loss2: {avg_loss2:.4f}", flush=True)
 
         # Validation Loop
         model.eval()
