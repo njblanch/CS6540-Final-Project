@@ -2,17 +2,19 @@
 
 import os
 import sys  # Added to handle stdout
-from tqdm import tqdm # type: ignore
-import torch # type: ignore
-import numpy as np # type: ignore
-from torchvision import models, transforms # type: ignore
+from tqdm import tqdm  # type: ignore
+import torch  # type: ignore
+import numpy as np  # type: ignore
+from torchvision import models, transforms  # type: ignore
 import csv
 from collections import defaultdict
-from decord import VideoReader # type: ignore
-from decord import cpu # type: ignore
-import pandas as pd # type: ignore
+from decord import VideoReader  # type: ignore
+from decord import cpu  # type: ignore
+import pandas as pd  # type: ignore
 import argparse
 import time
+from PIL import Image
+
 
 def parse_filename(filename):
     base_name = os.path.basename(filename)
@@ -23,6 +25,7 @@ def parse_filename(filename):
         raise ValueError(f"Unexpected filename format: {filename}")
     desync = desync_ext.split(".")[0]  # removing .mp4
     return video_id, clip_num, desync
+
 
 class Autoencoder(torch.nn.Module):
     def __init__(self, input_dim=1280, compressed_dim=128):
@@ -43,7 +46,31 @@ class Autoencoder(torch.nn.Module):
         reconstructed = self.decoder(compressed)
         return compressed, reconstructed
 
-def extract_frames(video_path, frame_rate):
+
+def extract_mouth_roi(face_frame, desired_width=128, desired_height=72):
+    face_width, face_height = face_frame.size  # Correct order: width first, then height
+
+    left = face_width * 1 // 4  # 25% from the left
+    right = face_width * 3 // 4  # 75% from the left
+    upper = face_height * 5 // 8 # 62.5% from the top
+    lower = upper + desired_height
+
+    if lower > face_height:
+        lower = face_height
+        upper = lower - desired_height
+        if upper < 0:
+            upper = 0
+            lower = desired_height
+
+    left, upper, right, lower = map(int, [left, upper, right, lower])
+    mouth_roi = face_frame.crop((left, upper, right, lower))
+
+    # mouth_roi = mouth_roi.resize((desired_width, desired_height), Image.ANTIALIAS)
+
+    return mouth_roi
+
+
+def extract_frames(video_path, frame_rate, test_debug=False, lip_debug_dir=None):
     try:
         vr = VideoReader(video_path, ctx=cpu())
         total_frames = len(vr)
@@ -53,15 +80,37 @@ def extract_frames(video_path, frame_rate):
         interval = max(1, int(fps / frame_rate))
         frame_indices = list(range(0, total_frames, interval))
         frames = vr.get_batch(frame_indices).asnumpy()
-        # Convert to PIL Images
-        frames = [transforms.ToPILImage()(frame) for frame in frames]
-        return frames
+
+        # Convert to PIL Images and extract mouth ROI
+        mouth_frames = []
+        for i, frame in enumerate(frames):
+            pil_frame = transforms.ToPILImage()(frame)
+            mouth_roi = extract_mouth_roi(pil_frame)
+            mouth_frames.append(mouth_roi)
+
+            # Save cropped mouth frames if test_debug is enabled
+            if test_debug and lip_debug_dir:
+                # get video id from video path
+                video_id = video_path.split("/")[-1].split("_")[0]
+                mouth_roi.save(os.path.join(lip_debug_dir, f"{video_id}_{i}.png"))
+
+        return mouth_frames
     except Exception as e:
         print(f"Error extracting frames with decord from {video_path}: {e}", flush=True)
         return None
 
-def extract_features(path, model, preprocess, device, fps, batch_size=32):
-    frames = extract_frames(path, fps)
+
+def extract_features(
+    path,
+    model,
+    preprocess,
+    device,
+    fps,
+    batch_size=32,
+    test_debug=False,
+    lip_debug_dir=None,
+):
+    frames = extract_frames(path, fps, test_debug, lip_debug_dir)
     if frames is None:
         return None
     inputs = torch.stack([preprocess(frame) for frame in frames]).to(device)
@@ -80,10 +129,19 @@ def extract_features(path, model, preprocess, device, fps, batch_size=32):
 
     return features
 
+
 def extract_features_with_autoencoder(
-    path, feature_extractor, preprocess, autoencoder, device, fps, batch_size=32
+    path,
+    feature_extractor,
+    preprocess,
+    autoencoder,
+    device,
+    fps,
+    batch_size=32,
+    test_debug=False,
+    lip_debug_dir=None,
 ):
-    frames = extract_frames(path, fps)
+    frames = extract_frames(path, fps, test_debug, lip_debug_dir)
     if frames is None:
         return None
     inputs = torch.stack([preprocess(frame) for frame in frames]).to(device)
@@ -102,6 +160,7 @@ def extract_features_with_autoencoder(
     features = np.concatenate(features, axis=0)
     return features
 
+
 def write_features_to_parquet(parquet_path, all_features):
     if not all_features:
         return
@@ -114,6 +173,7 @@ def write_features_to_parquet(parquet_path, all_features):
     df.to_parquet(parquet_path, index=False)
     print(f"Saved features to {parquet_path}", flush=True)
 
+
 def main():
     print(f"\nCurrent time: {time.ctime()}", flush=True)
 
@@ -121,27 +181,29 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}", flush=True)
 
+    lip_debug_dir = None
+
     # Argument parsing
     parser = argparse.ArgumentParser(description="Extract visual features from videos.")
     parser.add_argument(
         "-i",
         "--input_dir",
         type=str,
-        nargs='+',
+        nargs="+",
         required=True,
         help="Input directories containing videos.",
     )
     parser.add_argument(
         "-t",
         "--test",
-        action='store_true',
+        action="store_true",
         default=False,
         help="Enable test mode.",
     )
     parser.add_argument(
         "-a",
         "--use_autoencoder",
-        action='store_true',
+        action="store_true",
         default=False,
         help="Use autoencoder for feature compression.",
     )
@@ -152,19 +214,39 @@ def main():
         default=128,
         help="Size of the compressed features.",
     )
+    parser.add_argument(
+        "--test_debug",
+        action="store_true",
+        default=False,
+        help="Enable debug mode to save cropped lip frames.",
+    )
     args = parser.parse_args()
 
-    # if -a is true, then -s must be provided
-    if args.use_autoencoder and not args.autoencoder_size:
-        parser.error("Autoencoder size must be provided when using autoencoder.")
+    # Test debug mode flag
+    test_debug = args.test_debug
 
-    # Define output and video directories based on test flag
+    # Set output and video directories
     if args.test:
-        output_dir = "./test_dist/"
+        output_dir = "./test_dist_l_256/"
         video_dir = "../4_desynced/test_dist/"
     else:
-        output_dir = "./train_dist/"
+        output_dir = "./train_dist_l_256/"
         video_dir = "../4_desynced/train_dist/"
+
+    # Additional directory for saving lip frames during debug
+    lip_debug_dir = "./lip_region_test/"
+    if test_debug:
+        # os.makedirs(lip_debug_dir, exist_ok=True)
+        # check if folder exists, error out if it doesn't
+        if not os.path.exists(lip_debug_dir):
+            print(
+                f"Error: Lip debug directory {lip_debug_dir} does not exist. Exiting.",
+                flush=True,
+            )
+            sys.exit(1)
+        print(
+            f"Test debug mode enabled. Saving lip frames to {lip_debug_dir}", flush=True
+        )
 
     input_dirs = args.input_dir
 
@@ -192,7 +274,7 @@ def main():
                     f_name = os.path.basename(file)
                     # removing anything after the last "_", as well as the _
                     if "_" in f_name:
-                        f_name = f_name[:f_name.rfind("_")]
+                        f_name = f_name[: f_name.rfind("_")]
                         input_ids.add(f_name)
 
     print(f"Found {len(input_ids)} input ids", flush=True)
@@ -282,11 +364,26 @@ def main():
             # Extract features
             if autoencoder is not None:
                 feats = extract_features_with_autoencoder(
-                    vid_path, feature_extractor, preprocess, autoencoder, device, frame_rate, batch_size
+                    vid_path,
+                    feature_extractor,
+                    preprocess,
+                    autoencoder,
+                    device,
+                    frame_rate,
+                    batch_size,
+                    test_debug,
+                    lip_debug_dir,
                 )
             else:
                 feats = extract_features(
-                    vid_path, feature_extractor, preprocess, device, frame_rate, batch_size
+                    vid_path,
+                    feature_extractor,
+                    preprocess,
+                    device,
+                    frame_rate,
+                    batch_size,
+                    test_debug,
+                    lip_debug_dir,
                 )
 
             if feats is None:
@@ -299,16 +396,22 @@ def main():
                     [video_id, clip_num, frame_num, desync] + feature.tolist()
                 )
 
-        if all_features:
+        if all_features and not test_debug:
             # Create a unique Parquet file name per video_id
             parquet_filename = f"{video_id}.parquet"
             parquet_path = os.path.join(output_dir, parquet_filename)
             write_features_to_parquet(parquet_path, all_features)
             print(f"Finished processing video_id: {video_id}", flush=True)
+        elif test_debug:
+            print(
+                f"Test debug mode enabled. Skipping writing to parquet for video_id: {video_id}",
+                flush=True,
+            )
         else:
             print(f"No features extracted for video_id: {video_id}", flush=True)
 
     print(f"\nAll videos processed. Time: {time.ctime()}", flush=True)
+
 
 if __name__ == "__main__":
     main()
