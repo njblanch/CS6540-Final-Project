@@ -25,8 +25,10 @@ class CNN_Autoencoder(nn.Module):
             nn.ReLU(),
             nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1),  # (64, H/8, W/8)
             nn.ReLU(),
-            nn.Conv2d(32, 16, kernel_size=3, stride=2, padding=1),  # (128, H/16, W/16)
-            nn.ReLU()
+            nn.Conv2d(32, 16, kernel_size=3, stride=2, padding=1),  # (16, H/16, W/16)
+            nn.ReLU(),
+            nn.Conv2d(16, 16, kernel_size=3, stride=2, padding=1),  # (16, H/32, W/32)
+            nn.ReLU(),
         )
 
         # Calculate the size of the flattened feature map after the encoder
@@ -35,13 +37,15 @@ class CNN_Autoencoder(nn.Module):
 
         # Define the decoder layers
         self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(16, 32, kernel_size=3, stride=2, padding=1, output_padding=1),  # (64, H/8, W/8)
+            nn.ConvTranspose2d(16, 16, kernel_size=3, stride=2, padding=1, output_padding=1),  # (16, H/16, W/16)
             nn.ReLU(),
-            nn.ConvTranspose2d(32, 16, kernel_size=3, stride=2, padding=1, output_padding=1),  # (32, H/4, W/4)
+            nn.ConvTranspose2d(16, 32, kernel_size=3, stride=2, padding=1, output_padding=1),  # (32, H/8, W/8)
             nn.ReLU(),
-            nn.ConvTranspose2d(16, 8, kernel_size=3, stride=2, padding=1, output_padding=1),  # (16, H/2, W/2)
+            nn.ConvTranspose2d(32, 16, kernel_size=3, stride=2, padding=1, output_padding=1),  # (16, H/4, W/4)
             nn.ReLU(),
-            nn.ConvTranspose2d(8, 3, kernel_size=3, stride=2, padding=1, output_padding=1),  # (1, H, W)
+            nn.ConvTranspose2d(16, 8, kernel_size=3, stride=2, padding=1, output_padding=1),  # (8, H/2, W/2)
+            nn.ReLU(),
+            nn.ConvTranspose2d(8, 3, kernel_size=3, stride=2, padding=1, output_padding=1),  # (3, H, W)
             nn.Sigmoid()  # Apply Sigmoid to bring output to range [0, 1]
         )
 
@@ -154,7 +158,7 @@ class FrameLevelDataset(Dataset):
         return self.frames[idx]
 
 
-def train_autoencoder(autoencoder, train_dataset, test_dataset, device, num_epochs=20, learning_rate=1e-3):
+def train_autoencoder(autoencoder, train_dataset, test_dataset, device, num_epochs=20, learning_rate=1e-3, model_name="cae"):
     # Define optimizer and loss function
     optimizer = optim.Adam(autoencoder.parameters(), lr=learning_rate)
     # Use of MSE since each pixel level thing is continuous
@@ -205,12 +209,12 @@ def train_autoencoder(autoencoder, train_dataset, test_dataset, device, num_epoc
         if avg_test_loss < min_test_loss:
             min_test_loss = avg_test_loss
             print(f"Best test loss, saving model.")
-            torch.save(autoencoder.state_dict(), "cae_best.pth")
+            torch.save(autoencoder.state_dict(), f"{model_name}_best.pth")
 
     print("Autoencoder training and testing completed, saving model.")
-    torch.save(autoencoder.state_dict(), "cae_final.pth")
+    torch.save(autoencoder.state_dict(), f"{model_name}_final.pth")
 
-    # Save reconstructed to test
+    # Save reconstructed to test (only from last batch)
     save_reconstructed_images(inputs, reconstructed, epoch, "test_reconstructed")
 
 
@@ -248,7 +252,7 @@ if __name__ == "__main__":
         os.path.join(parent_folder, d) for d in os.listdir(parent_folder)
         if os.path.isdir(os.path.join(parent_folder, d)) and d.startswith('xa')
     ]
-
+    model_name = "cae_1024"
     output_dir = "train_dist_l_256/"
 
     # Additional directory for saving lip frames during debug
@@ -338,5 +342,5 @@ if __name__ == "__main__":
 
     # Train the autoencoder
     print("Training autoencoder", flush=True)
-    train_autoencoder(autoencoder, train_frame_dataset, test_frame_dataset, device, num_epochs=num_epochs)
+    train_autoencoder(autoencoder, train_frame_dataset, test_frame_dataset, device, num_epochs=num_epochs, model_name=model_name)
 

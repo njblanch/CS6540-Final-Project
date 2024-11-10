@@ -101,10 +101,10 @@ conda activate "${conda_env}"
 script_loc="${python_script}"
 
 echo "Executing Python script with command:"
-echo "/gpfs1/home/s/h/sheining/miniconda3/envs/videosync3.10/bin/python \"\$script_loc\" -i ${input_dirs_str} -c"
+echo "/gpfs1/home/s/h/sheining/miniconda3/envs/videosync3.10/bin/python \"\$script_loc\" -i ${input_dirs_str}"
 
 # Execute the Python script with multiple input directories
-/gpfs1/home/s/h/sheining/miniconda3/envs/videosync3.10/bin/python "\$script_loc" -i ${input_dirs_str} -c
+/gpfs1/home/s/h/sheining/miniconda3/envs/videosync3.10/bin/python "\$script_loc" -i ${input_dirs_str}
 EOT
 )
 

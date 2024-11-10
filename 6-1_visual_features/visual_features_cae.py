@@ -123,8 +123,6 @@ def extract_features_using_cae(
 
             # Saving reconstructed frames
             if lip_debug_dir:
-                # os.makedirs(lip_debug_dir, exist_ok=True)
-
                 # Convert reconstructed frames to numpy and save as images
                 reconstructed_batch = reconstructed_batch.cpu().permute(0, 2, 3, 1).numpy()  # Convert to (N, H, W, C)
 
@@ -197,11 +195,11 @@ def main():
 
     # Set output and video directories
     if args.test:
-        output_dir = "./test_dist_l_256/"
-        video_dir = "../4_desynced/test_dist/"
+        output_dir = "/gpfs2/classes/cs6540/AVSpeech/6-1_visual_features/test_cae/"
+        video_dir = "/gpfs2/classes/cs6540/AVSpeech/4_desynced/test_dist/"
     else:
-        output_dir = "./train_dist_l_256/"
-        video_dir = "../4_desynced/train_dist/"
+        output_dir = "/gpfs2/classes/cs6540/AVSpeech/6-1_visual_features/train_cae/"
+        video_dir = "/gpfs2/classes/cs6540/AVSpeech/4_desynced/train_dist/"
 
     # Additional directory for saving lip frames during debug
     lip_debug_dir = "./lip_region_test/"
@@ -226,10 +224,10 @@ def main():
 
     # if autoencoder is true, append "_autoencoder_size" to output_dir
 
-    # remove the trailing / if it exists
-    if output_dir.endswith("/"):
-        output_dir = output_dir[:-1]
-    output_dir += f"_cae_{args.autoencoder_size}/"
+    # remove the trailing / if it exists (handled above)
+    # if output_dir.endswith("/"):
+    #     output_dir = output_dir[:-1]
+    # output_dir += f"_cae_{args.autoencoder_size}/"
 
     # Ensure output directory exists
     os.makedirs(output_dir, exist_ok=True)
@@ -282,7 +280,8 @@ def main():
     # Load pretrained autoencoder
     model_path = "/gpfs1/home/s/h/sheining/videosync/cae_best.pth"
     if os.path.exists(model_path):
-        autoencoder.load_state_dict(torch.load(model_path))
+        state_dict = torch.load(model_path, map_location=device)
+        autoencoder.load_state_dict(state_dict)
     else:
         print("Pretrained autoencoder not found; proceeding without training.")
         exit()
