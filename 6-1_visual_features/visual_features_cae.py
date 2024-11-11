@@ -195,10 +195,10 @@ def main():
 
     # Set output and video directories
     if args.test:
-        output_dir = "/gpfs2/classes/cs6540/AVSpeech/6-1_visual_features/test_cae/"
+        output_dir = "/gpfs2/classes/cs6540/AVSpeech/6-1_visual_features/test_1024_cae/"
         video_dir = "/gpfs2/classes/cs6540/AVSpeech/4_desynced/test_dist/"
     else:
-        output_dir = "/gpfs2/classes/cs6540/AVSpeech/6-1_visual_features/train_cae/"
+        output_dir = "/gpfs2/classes/cs6540/AVSpeech/6-1_visual_features/train_1024_cae/"
         video_dir = "/gpfs2/classes/cs6540/AVSpeech/4_desynced/train_dist/"
 
     # Additional directory for saving lip frames during debug
@@ -278,7 +278,7 @@ def main():
     autoencoder = CNN_Autoencoder().to(device)
 
     # Load pretrained autoencoder
-    model_path = "/gpfs1/home/s/h/sheining/videosync/cae_best.pth"
+    model_path = "/gpfs1/home/s/h/sheining/videosync/cae_1024_best.pth"
     if os.path.exists(model_path):
         state_dict = torch.load(model_path, map_location=device)
         autoencoder.load_state_dict(state_dict)
