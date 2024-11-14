@@ -7,25 +7,8 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 import random
 import numpy as np
-from functools import lru_cache
 
 OFFSET = 7
-
-
-def one_hot_encode(labels, offset=OFFSET):
-    class_labels = list(range(-offset, offset + 1))  # [-7, -6, ..., 0, ..., 6, 7]
-    unique_classes = np.array(class_labels)
-    class_to_index = {cls: idx for idx, cls in enumerate(unique_classes)}
-    one_hot_matrix = np.zeros((len(labels), len(unique_classes)), dtype=int)
-    for idx, label in enumerate(labels):
-        label = int(label)
-        if label in class_to_index:
-            one_hot_matrix[idx, class_to_index[label]] = 1
-        else:
-            raise ValueError(
-                f"Label {label} is not in the range of -{offset} to {offset}."
-            )
-    return one_hot_matrix
 
 
 class VideoAudioDataset(Dataset):
@@ -34,7 +17,7 @@ class VideoAudioDataset(Dataset):
         filenames,
         video_path,
         audio_path,
-        normalization_params=None,
+        normalization_params,
         max_length=225,
         normalize=True,
         cache_size=1000,
@@ -58,21 +41,12 @@ class VideoAudioDataset(Dataset):
         self.cache = {}
 
         if self.normalize:
-            if normalization_params is None:
-                raise ValueError(
-                    "Normalization parameters must be provided if normalize=True."
-                )
             self.mean_audio = normalization_params["mean_audio"]
             self.std_audio = normalization_params["std_audio"]
             self.mean_video = normalization_params["mean_video"]
             self.std_video = normalization_params["std_video"]
 
-    @lru_cache(maxsize=1000)
     def load_sample(self, filename):
-        """
-        Load and preprocess a single data sample.
-        Cached to avoid redundant processing.
-        """
         audio_csv = os.path.join(self.audio_path, f"{filename}.csv")
         video_parquet = os.path.join(self.video_path, f"{filename}.parquet")
 
@@ -83,82 +57,58 @@ class VideoAudioDataset(Dataset):
             audio_data = pd.read_csv(audio_csv)
             video_data = pd.read_parquet(video_parquet)
 
-            # Group by video_id and clip_number
             audio_groups = audio_data.groupby(["video_id", "video_number"])
             video_groups = video_data.groupby(["video_id", "clip_num"])
 
-            # Assuming one group per file
-            for (video_id, clip_number), audio_group in audio_groups:
-                if (f"{video_id}", f"{clip_number}") not in video_groups.groups:
-                    continue
+            for key in audio_groups.groups.keys():
+                if key in video_groups.groups:
+                    audio_group = audio_groups.get_group(key)
+                    video_group = video_groups.get_group(key)
 
-                video_group = video_groups.get_group((f"{video_id}", f"{clip_number}"))
-
-                # Process features
-                video_features = (
-                    video_group.drop(
+                    video_features = video_group.drop(
                         columns=["video_id", "clip_num", "desync", "frame_number"]
-                    )
-                    .astype(float)
-                    .values
-                )
-                audio_features = (
-                    audio_group.drop(
+                    ).astype(float).values
+                    audio_features = audio_group.drop(
                         columns=["video_id", "video_number", "frame_number"]
-                    )
-                    .astype(float)
-                    .values
-                )
+                    ).astype(float).values
 
-                # Pad/truncate audio features to 120
-                if audio_features.shape[1] < 120:
-                    padding_size = 120 - audio_features.shape[1]
-                    audio_features = np.pad(
-                        audio_features, ((0, 0), (0, padding_size)), "constant"
-                    )
-                elif audio_features.shape[1] > 120:
-                    audio_features = audio_features[:, :120]
+                    if audio_features.shape[1] != 120:
+                        raise ValueError(
+                            f"Unexpected audio feature dimension in {filename}"
+                        )
 
-                # Ensure matching sequence lengths
-                min_length = min(len(audio_features), len(video_features))
-                audio_features = audio_features[:min_length]
-                video_features = video_features[:min_length]
+                    min_length = min(len(audio_features), len(video_features))
+                    audio_features = audio_features[:min_length]
+                    video_features = video_features[:min_length]
 
-                # Compute target: mean of 'desync'
-                y_offset = (
-                    video_group["desync"].astype(float).values[:min_length].mean()
-                )
+                    desync_values = video_group["desync"].astype(float).values[:min_length]
+                    if not np.all(desync_values == desync_values[0]):
+                        raise ValueError(f"Inconsistent desync values in {filename}")
+                    y_offset = desync_values[0]
 
-                if y_offset < -OFFSET or y_offset > OFFSET:
-                    raise ValueError(f"y_offset {y_offset} out of range for {filename}")
+                    if y_offset < -OFFSET or y_offset > OFFSET:
+                        raise ValueError(f"y_offset {y_offset} out of range for {filename}")
 
-                # Convert to tensors
-                video_features = torch.tensor(video_features, dtype=torch.float)
-                audio_features = torch.tensor(audio_features, dtype=torch.float)
+                    video_features = torch.tensor(video_features, dtype=torch.float)
+                    audio_features = torch.tensor(audio_features, dtype=torch.float)
 
-                # Normalize
-                if self.normalize:
-                    video_features = (video_features - self.mean_video) / (
-                        self.std_video + 1e-8
-                    )
-                    audio_features = (audio_features - self.mean_audio) / (
-                        self.std_audio + 1e-8
-                    )
+                    if self.normalize:
+                        video_features = (video_features - self.mean_video) / (self.std_video + 1e-8)
+                        audio_features = (audio_features - self.mean_audio) / (self.std_audio + 1e-8)
 
-                # Pad or truncate to max_length
-                video_features = self.pad_or_truncate(video_features, self.max_length)
-                audio_features = self.pad_or_truncate(audio_features, self.max_length)
+                    video_features = self.pad_or_truncate(video_features, self.max_length)
+                    audio_features = self.pad_or_truncate(audio_features, self.max_length)
 
-                # Convert target to tensor
-                y_offset = torch.tensor(y_offset, dtype=torch.float)
+                    y_offset = torch.tensor(y_offset, dtype=torch.float)
 
-                return video_features, audio_features, min_length, y_offset
+                    return video_features, audio_features, min_length, y_offset
+
+            raise ValueError(f"No matching video group found for audio file {filename}")
 
         except Exception as e:
             print(f"Error loading sample {filename}: {e}", flush=True)
             raise e
 
-    @staticmethod
     def pad_or_truncate(tensor, max_length):
         if tensor.size(0) > max_length:
             return tensor[:max_length]
@@ -179,62 +129,31 @@ class VideoAudioDataset(Dataset):
         else:
             try:
                 sample = self.load_sample(filename)
-                # Add to cache
                 if len(self.cache) >= self.cache_size:
-                    # Remove a random item from cache to make space
                     remove_key = random.choice(list(self.cache.keys()))
                     del self.cache[remove_key]
                 self.cache[filename] = sample
                 return sample
             except Exception as e:
                 print(f"Failed to load sample {filename}: {e}", flush=True)
-                # Optionally, implement logic to skip or substitute
-                # For now, re-raise the exception
-                raise e
+                raise IndexError
 
 
-def load_and_intersect_data(dir1, dir2):
-    # Gather all filenames from both directories
-    parquet_filenames = set()
-    csv_filenames = set()
-
-    # Process first directory (parquet files)
-    for filename in os.listdir(dir1):
-        if filename.endswith(".parquet"):
-            name_without_extension = os.path.splitext(os.path.basename(filename))[0]
-            parquet_filenames.add(name_without_extension)
-
-    # Process second directory (csv files)
-    for filename in os.listdir(dir2):
-        if filename.endswith(".csv"):
-            file_path = os.path.join(dir2, filename)  # Full path for size check
-            if os.path.getsize(file_path) > 1922:  # Ensure file has data
-                name_without_extension = os.path.splitext(os.path.basename(filename))[0]
-                csv_filenames.add(name_without_extension)
-
-    # Find the intersection of filenames
+def load_and_intersect_data(video_dir, audio_dir):
+    parquet_filenames = {os.path.splitext(f)[0] for f in os.listdir(video_dir) if f.endswith(".parquet")}
+    csv_filenames = {
+        os.path.splitext(f)[0] for f in os.listdir(audio_dir) if f.endswith(".csv") and os.path.getsize(os.path.join(audio_dir, f)) > 1922
+    }
     intersecting_filenames = list(parquet_filenames.intersection(csv_filenames))
-    print(
-        f"Number of intersecting filenames: {len(intersecting_filenames)}", flush=True
-    )
+    print(f"Number of intersecting filenames: {len(intersecting_filenames)}", flush=True)
     return intersecting_filenames
 
 
 def split_data(data, train_size=0.7, val_size=0.15):
-    # Split the data into train and temp (validation + test)
-    train_data, temp_data = train_test_split(
-        data,
-        train_size=train_size,
-        random_state=42,
-    )
-
-    # Calculate the adjusted validation size from temp_data
+    train_data, temp_data = train_test_split(data, train_size=train_size, random_state=42)
     val_data, test_data = train_test_split(
-        temp_data,
-        test_size=(1 - val_size / (1 - train_size)),  # random_state=42
-        random_state=42,
+        temp_data, test_size=(1 - val_size / (1 - train_size)), random_state=42
     )
-
     return train_data, val_data, test_data
 
 
@@ -245,77 +164,43 @@ def load_dataset(
     max_data=None,
     save=False,
     batch_size=32,
-    train_size=1000,
 ):
-    if train_size:
-        test_size = train_size // 5
-        val_size = train_size // 5
-    # Load and union data
-    skip_downsample = False
     if max_data is None:
-        skip_downsample = True
+        max_data = {"train": None, "val": None, "test": None}
 
     combined_data = load_and_intersect_data(video_path, audio_path)
-
-    # Split the data
     train_filenames, val_filenames, test_filenames = split_data(combined_data)
 
-    # Limit dataset sizes
-    if not skip_downsample:
-        print(f"Downsampling: {max_data}", flush=True)
-        if len(train_filenames) > max_data["train"]:
-            train_filenames = random.sample(train_filenames, max_data["train"])
+    if max_data["train"] and len(train_filenames) > max_data["train"]:
+        train_filenames = random.sample(train_filenames, max_data["train"])
+    if max_data["val"] and len(val_filenames) > max_data["val"]:
+        val_filenames = random.sample(val_filenames, max_data["val"])
+    if max_data["test"] and len(test_filenames) > max_data["test"]:
+        test_filenames = random.sample(test_filenames, max_data["test"])
 
-        if len(val_filenames) > max_data["val"]:
-            val_filenames = random.sample(val_filenames, max_data["val"])
-
-        if len(test_filenames) > max_data["test"]:
-            test_filenames = random.sample(test_filenames, max_data["test"])
-
-    # Save the filenames
     if save:
-        print("Saving files", flush=True)
-        with open("train_filenames.txt", "w") as train_file:
-            for filename in train_filenames:
-                train_file.write(f"{filename}\n")
+        for split, filenames in zip(
+            ["train", "val", "test"], [train_filenames, val_filenames, test_filenames]
+        ):
+            with open(f"{split}_filenames.txt", "w") as f:
+                for filename in filenames:
+                    f.write(f"{filename}\n")
+        print("Filenames saved.", flush=True)
 
-        with open("val_filenames.txt", "w") as val_file:
-            for filename in val_filenames:
-                val_file.write(f"{filename}\n")
-
-        with open("test_filenames.txt", "w") as test_file:
-            for filename in test_filenames:
-                test_file.write(f"{filename}\n")
-        print("Files saved", flush=True)
-
-    # Load normalization parameters
     if not os.path.exists(normalization_params_path):
-        raise FileNotFoundError(
-            f"Normalization parameters file not found at {normalization_params_path}"
-        )
+        raise FileNotFoundError(f"Normalization parameters not found at {normalization_params_path}")
 
     normalization_params = torch.load(normalization_params_path)
 
-    print("Loading datasets", flush=True)
-    # Create DataLoaders for each split
     train_dataset = VideoAudioDataset(
-        train_filenames,
-        video_path,
-        audio_path,
-        normalization_params=normalization_params,
+        train_filenames, video_path, audio_path, normalization_params
     )
-    print("train_dataset loaded", flush=True)
     val_dataset = VideoAudioDataset(
-        val_filenames, video_path, audio_path, normalization_params=normalization_params
+        val_filenames, video_path, audio_path, normalization_params
     )
-    print("val_dataset loaded", flush=True)
     test_dataset = VideoAudioDataset(
-        test_filenames,
-        video_path,
-        audio_path,
-        normalization_params=normalization_params,
+        test_filenames, video_path, audio_path, normalization_params
     )
-    print("test_dataset loaded", flush=True)
 
     print(f"Train dataset size: {len(train_dataset)}", flush=True)
     print(f"Validation dataset size: {len(val_dataset)}", flush=True)
@@ -323,25 +208,13 @@ def load_dataset(
 
     num_workers = min(4, os.cpu_count())
     train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        num_workers=num_workers,
-        shuffle=True,
-        pin_memory=True,
+        train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True
     )
     val_loader = DataLoader(
-        val_dataset,
-        batch_size=batch_size,
-        num_workers=num_workers,
-        shuffle=False,
-        pin_memory=True,
+        val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True
     )
     test_loader = DataLoader(
-        test_dataset,
-        batch_size=batch_size,
-        num_workers=num_workers,
-        shuffle=False,
-        pin_memory=True,
+        test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True
     )
 
     return train_loader, val_loader, test_loader

@@ -6,33 +6,18 @@ import math
 
 
 class LearnablePositionalEncoding(nn.Module):
-    """
-    Learnable positional embeddings for sequences.
-    """
-
-    def __init__(self, d_model, max_len=5000):
+    def __init__(self, d_model, max_len=256, dropout=0.1):
         super(LearnablePositionalEncoding, self).__init__()
         self.pos_embedding = nn.Embedding(max_len, d_model)
-        self.max_len = max_len
+        self.dropout = nn.Dropout(p=dropout)
+        nn.init.xavier_uniform_(self.pos_embedding.weight)
 
-        # Initialize positional embeddings
-        nn.init.normal_(self.pos_embedding.weight, mean=0, std=0.1)
-
-    def forward(self, x):
-        """
-        Args:
-            x: Tensor of shape (batch_size, seq_len, d_model)
-        Returns:
-            Tensor with positional embeddings added.
-        """
-        batch_size, seq_len, _ = x.size()
-        positions = (
-            torch.arange(0, seq_len, device=x.device)
-            .unsqueeze(0)
-            .expand(batch_size, seq_len)
-        )
-        pos_embed = self.pos_embedding(positions)  # (batch_size, seq_len, d_model)
-        return x + pos_embed
+    def forward(self, x, positions=None):
+        if positions is None:
+            batch_size, seq_len, _ = x.size()
+            positions = torch.arange(0, seq_len, device=x.device).unsqueeze(0).expand(batch_size, seq_len)
+        pos_embed = self.pos_embedding(positions)
+        return self.dropout(x + pos_embed)
 
 
 class GatedFusion(nn.Module):
@@ -40,27 +25,39 @@ class GatedFusion(nn.Module):
     Gated fusion mechanism to combine audio and video features.
     """
 
-    def __init__(self, video_dim, audio_dim, d_model):
+    def __init__(self, video_dim, audio_dim, d_model, gate_activation='sigmoid'):
         super(GatedFusion, self).__init__()
         self.fc = nn.Linear(video_dim + audio_dim, d_model)
-        self.gate = nn.Sequential(
-            nn.Linear(video_dim + audio_dim, d_model), nn.Sigmoid()
-        )
+        if gate_activation == 'sigmoid':
+            self.gate = nn.Sequential(
+                nn.Linear(video_dim + audio_dim, d_model), nn.Sigmoid()
+            )
+        elif gate_activation == 'softmax':
+            self.gate = nn.Sequential(
+                nn.Linear(video_dim + audio_dim, d_model), nn.Softmax(dim=-1)
+            )
+        elif gate_activation == 'tanh':
+            self.gate = nn.Sequential(
+                nn.Linear(video_dim + audio_dim, d_model), nn.Tanh()
+            )
+        else:
+            raise ValueError(f"Unsupported gate_activation: {gate_activation}")
 
     def forward(self, video_features, audio_features):
         """
+        Forward pass for gated fusion.
+
         Args:
-            video_features: Tensor of shape (batch_size, seq_len, video_dim)
-            audio_features: Tensor of shape (batch_size, seq_len, audio_dim)
+            video_features (Tensor): Tensor of shape (batch_size, seq_len, video_dim)
+            audio_features (Tensor): Tensor of shape (batch_size, seq_len, audio_dim)
+
         Returns:
-            Fused features: Tensor of shape (batch_size, seq_len, d_model)
+            Tensor: Fused features of shape (batch_size, seq_len, d_model)
         """
-        combined = torch.cat(
-            (video_features, audio_features), dim=-1
-        )  # (batch, seq, video_dim + audio_dim)
-        fused = self.fc(combined)  # (batch, seq, d_model)
-        gate = self.gate(combined)  # (batch, seq, d_model)
-        return fused * gate  # (batch, seq, d_model)
+        combined = torch.cat((video_features, audio_features), dim=-1)
+        fused = self.fc(combined)
+        gate = self.gate(combined)
+        return fused * gate
 
 
 class CrossModalAttention(nn.Module):
@@ -97,53 +94,27 @@ class MultiModalTransformer(nn.Module):
         self,
         video_dim,
         audio_dim,
-        n_heads_video,
-        n_heads_audio,
         n_heads_transformer,
         num_layers,
         d_model,
         dim_feedforward,
         output_dim,
-        max_seq_length=5000,
+        max_seq_length=256,
         dropout=0.1,
     ):
         super(MultiModalTransformer, self).__init__()
 
-        # Ensure dimensions are divisible by the number of heads
-        assert (
-            video_dim % n_heads_video == 0
-        ), "video_dim must be divisible by n_heads_video"
-        assert (
-            audio_dim % n_heads_audio == 0
-        ), "audio_dim must be divisible by n_heads_audio"
-        assert (
-            d_model % n_heads_transformer == 0
-        ), "d_model must be divisible by n_heads_transformer"
+        if d_model % n_heads_transformer != 0:
+            raise ValueError(
+                f"d_model ({d_model}) must be divisible by n_heads_transformer ({n_heads_transformer})"
+            )
 
-        # Positional encodings for video and audio (learnable)
-        self.pos_encoder_video = LearnablePositionalEncoding(
-            video_dim, max_len=max_seq_length
-        )
-        self.pos_encoder_audio = LearnablePositionalEncoding(
-            audio_dim, max_len=max_seq_length
-        )
+        # Projection layers
+        self.video_proj = nn.Linear(video_dim, d_model)
+        self.audio_proj = nn.Linear(audio_dim, d_model)
 
-        # Separate multi-head attention layers for video and audio
-        self.video_attention = nn.MultiheadAttention(
-            embed_dim=video_dim,
-            num_heads=n_heads_video,
-            dropout=dropout,
-            batch_first=True,
-        )
-        self.audio_attention = nn.MultiheadAttention(
-            embed_dim=audio_dim,
-            num_heads=n_heads_audio,
-            dropout=dropout,
-            batch_first=True,
-        )
-
-        # Gated Fusion layer
-        self.gated_fusion = GatedFusion(video_dim, audio_dim, d_model)
+        # Shared positional encoding
+        self.pos_encoder = LearnablePositionalEncoding(d_model, max_len=max_seq_length)
 
         # Cross-modal attention layers
         self.cross_attn_video_to_audio = CrossModalAttention(
@@ -172,6 +143,7 @@ class MultiModalTransformer(nn.Module):
 
         # Output layer for regression
         self.output_layer = nn.Linear(d_model, output_dim)
+        self.output_activation = nn.Tanh()
 
         # Dropout for regularization
         self.dropout = nn.Dropout(p=dropout)
@@ -180,14 +152,14 @@ class MultiModalTransformer(nn.Module):
         self._init_weights()
 
     def _init_weights(self):
-        # Initialize weights using Xavier uniform for linear layers and normal for embeddings
+        # Initialize weights using Xavier uniform for linear layers and embeddings
         for module in self.modules():
             if isinstance(module, nn.Linear):
                 nn.init.xavier_uniform_(module.weight)
                 if module.bias is not None:
                     nn.init.constant_(module.bias, 0)
             elif isinstance(module, nn.Embedding):
-                nn.init.normal_(module.weight, mean=0, std=0.1)
+                nn.init.xavier_uniform_(module.weight)
             elif isinstance(module, nn.MultiheadAttention):
                 # Initialize MultiheadAttention
                 nn.init.xavier_uniform_(module.in_proj_weight)
@@ -198,7 +170,8 @@ class MultiModalTransformer(nn.Module):
                 if module.out_proj.bias is not None:
                     nn.init.constant_(module.out_proj.bias, 0)
 
-    def forward(self, video_features, audio_features, mask=None, key_padding_mask=None):
+
+    def forward(self, video_features, audio_features, video_positions, audio_positions, mask=None, key_padding_mask=None):
         """
         Args:
             video_features: (batch_size, seq_len, video_dim)
@@ -208,50 +181,33 @@ class MultiModalTransformer(nn.Module):
         Returns:
             output: (batch_size, output_dim)
         """
+        # Project features to the common dimension
+        video_features = self.video_proj(video_features)  # (batch_size, seq_len, d_model)
+        audio_features = self.audio_proj(audio_features)  # (batch_size, seq_len, d_model)
+
         # Add positional encoding
-        video_features = self.pos_encoder_video(
-            video_features
-        )  # (batch, seq, video_dim)
-        audio_features = self.pos_encoder_audio(
-            audio_features
-        )  # (batch, seq, audio_dim)
-
-        # Apply multi-head attention separately to video and audio features
-        video_out, _ = self.video_attention(
-            video_features,
-            video_features,
-            video_features,
-            attn_mask=mask,
-            key_padding_mask=key_padding_mask,
-        )
-        audio_out, _ = self.audio_attention(
-            audio_features,
-            audio_features,
-            audio_features,
-            attn_mask=mask,
-            key_padding_mask=key_padding_mask,
-        )
-
-        # Gated Fusion
-        fused_features = self.gated_fusion(
-            video_out, audio_out
-        )  # (batch, seq, d_model)
+        video_features = self.pos_encoder(video_features, positions=video_positions)
+        audio_features = self.pos_encoder(audio_features, positions=audio_positions)
 
         # Cross-modal Attention
-        fused_features = self.cross_attn_video_to_audio(
-            fused_features,
-            fused_features,
-            fused_features,
-            mask=mask,
+        fused_features_video_to_audio = self.cross_attn_video_to_audio(
+            query=video_features,
+            key=audio_features,
+            value=audio_features,
+            attn_mask=mask,
             key_padding_mask=key_padding_mask,
         )
-        fused_features = self.cross_attn_audio_to_video(
-            fused_features,
-            fused_features,
-            fused_features,
-            mask=mask,
+
+        fused_features_audio_to_video = self.cross_attn_audio_to_video(
+            query=audio_features,
+            key=video_features,
+            value=video_features,
+            attn_mask=mask,
             key_padding_mask=key_padding_mask,
         )
+
+        # Combine both cross-attended features
+        fused_features = (fused_features_video_to_audio + fused_features_audio_to_video) / 2
 
         # Add [CLS] token
         batch_size, seq_len, _ = fused_features.size()
@@ -273,5 +229,6 @@ class MultiModalTransformer(nn.Module):
 
         # Final regression output
         output = self.output_layer(cls_output)  # (batch, output_dim)
+        output = self.output_activation(output) * 15  # Scale to [-15, 15]
 
         return output

@@ -8,7 +8,7 @@ import numpy as np
 
 
 def compute_normalization(
-    video_path, audio_path, filenames, max_length=225, audio_dim=120, video_dim=256
+    video_path, audio_path, filenames, max_length=225, audio_dim=120, video_dim=1024
 ):
     audio_sum = torch.zeros(audio_dim)
     audio_sq_sum = torch.zeros(audio_dim)
@@ -85,9 +85,14 @@ def compute_normalization(
 
     if count > 0:
         mean_audio = audio_sum / count
-        std_audio = (audio_sq_sum / count - mean_audio**2).sqrt()
         mean_video = video_sum / count
-        std_video = (video_sq_sum / count - mean_video**2).sqrt()
+
+        # Compute variance and clamp to prevent negative values
+        variance_audio = (audio_sq_sum / count - mean_audio ** 2).clamp(min=1e-6)
+        variance_video = (video_sq_sum / count - mean_video ** 2).clamp(min=1e-6)
+
+        std_audio = variance_audio.sqrt()
+        std_video = variance_video.sqrt()
 
         # Save the normalization parameters
         torch.save(
@@ -97,7 +102,7 @@ def compute_normalization(
                 "mean_video": mean_video,
                 "std_video": std_video,
             },
-            "normalization_params.pth",
+            "normalization_params_cae.pth",
         )
 
         print("Normalization parameters computed and saved.")
@@ -105,9 +110,10 @@ def compute_normalization(
         raise ValueError("No data found for normalization.")
 
 
+
 if __name__ == "__main__":
     # Define your paths
-    video_path = "/gpfs2/classes/cs6540/AVSpeech/6_visual_features/train_dist_l_256_256"
+    video_path = "/gpfs2/classes/cs6540/AVSpeech/6-1_visual_features/train_1024_cae"
     audio_path = "/gpfs2/classes/cs6540/AVSpeech/5_audio/train"
 
     # Load filenames (assuming you have a list of filenames)
