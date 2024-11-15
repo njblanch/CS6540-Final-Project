@@ -1,5 +1,3 @@
-# compute_normalization.py
-
 import os
 import pandas as pd
 import torch
@@ -72,11 +70,11 @@ def compute_normalization(
                     audio_tensor = torch.tensor(audio_features, dtype=torch.float)
                     video_tensor = torch.tensor(video_features, dtype=torch.float)
 
-                    # Accumulate sums
-                    audio_sum += audio_tensor.sum(dim=(0, 1))
-                    audio_sq_sum += (audio_tensor**2).sum(dim=(0, 1))
-                    video_sum += video_tensor.sum(dim=(0, 1))
-                    video_sq_sum += (video_tensor**2).sum(dim=(0, 1))
+                    # Accumulate sums correctly per feature
+                    audio_sum += audio_tensor.sum(dim=0)           # Sum over sequence length
+                    audio_sq_sum += (audio_tensor ** 2).sum(dim=0)
+                    video_sum += video_tensor.sum(dim=0)
+                    video_sq_sum += (video_tensor ** 2).sum(dim=0)
                     count += min_length
 
         except Exception as e:
@@ -108,7 +106,6 @@ def compute_normalization(
         print("Normalization parameters computed and saved.")
     else:
         raise ValueError("No data found for normalization.")
-
 
 
 if __name__ == "__main__":
