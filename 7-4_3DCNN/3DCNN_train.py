@@ -38,8 +38,8 @@ audio_path = "/gpfs2/classes/cs6540/AVSpeech/5_audio/train"
 video_path = "/gpfs2/classes/cs6540/AVSpeech/6-1_visual_features/train_1024_cae"
 normalization_params_path = "normalization_params_cae.pth"
 
-# max_data = {"train": 10000, "val": 2000, "test": 2000}
-max_data = {"train": 100, "val": 20, "test": 20}
+max_data = {"train": 10000, "val": 2000, "test": 2000}
+# max_data = {"train": 100, "val": 20, "test": 20}
 
 # Load datasets
 train_loader, val_loader, test_loader = load_dataset(

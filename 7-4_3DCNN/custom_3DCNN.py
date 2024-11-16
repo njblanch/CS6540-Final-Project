@@ -82,31 +82,33 @@ class AVsync_CNN(nn.Module):
         # Reshape flattened visual input into (Batch, Channels, Temporal, Height, Width)
         batch_size, num_frames, flattened_features = visual_input.size()
         height, width, depth = 8, 8, 16  # Known dimensions
-        print(visual_input.shape)
+        # print(visual_input.shape)
         visual_input = visual_input.view(batch_size, num_frames, height, width, depth)
         visual_input = visual_input.permute(0, 4, 1, 2, 3)  # Change to (Batch, Channels, Temporal, Height, Width)
         # (16, 225, 8, 8)
-        print(visual_input.shape)
+        # print(visual_input.shape)
         # Visual stream
         visual_features = self.visual_stream(visual_input)
-        visual_features = visual_features.view(visual_features.size(0), -1)  # Flatten
+        visual_features = visual_features.reshape(visual_features.size(0), -1)  # Flatten
 
         # Apply attention mask to the visual features
-        visual_mask = visual_mask.unsqueeze(1)  # Shape [Batch, Temporal, 1]
-        visual_features = visual_features * visual_mask.view(batch_size, -1)  # Masking
+        # TODO: Add masking, will have to modify mask to match
+        # visual_mask = visual_mask.unsqueeze(1)  # Shape [Batch, Temporal, 1]
+        # visual_features = visual_features * visual_mask.reshape(batch_size, -1)  # Masking
 
         visual_features = self.visual_fc(visual_features)
 
         # Audio stream
         audio_input = audio_input.unsqueeze(1)  # Add channel dimension [Batch, Channels=1, Temporal, Features]
-        print(audio_input.shape)
+        # print(audio_input.shape)
         audio_features = self.audio_stream(audio_input)
         audio_features = audio_features.view(audio_features.size(0), -1)  # Flatten
         audio_features = self.audio_fc(audio_features)
 
         # Apply attention mask to the audio features
-        audio_mask = audio_mask.unsqueeze(1)  # Shape [Batch, Temporal, 1]
-        audio_features = audio_features * audio_mask.view(batch_size, -1)  # Masking
+        # TODO: Add masking, modify to match sizing of outputs
+        # audio_mask = audio_mask.unsqueeze(1)  # Shape [Batch, Temporal, 1]
+        # audio_features = audio_features * audio_mask.view(batch_size, -1)  # Masking
 
         # Fusion
         fused_features = torch.cat((visual_features, audio_features), dim=1)

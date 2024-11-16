@@ -46,10 +46,14 @@ class VideoAudioDataset(Dataset):
             self.std_video = normalization_params["std_video"]
         print(self.mean_audio.shape)
 
+        # This is here due to prior errors with loading the dataset
         self.filenames = []
+        self.data = []
         for file in filenames:
-            if self.load_sample(file) is not None:
+            temp_data = self.load_sample(file)
+            if temp_data is not None or temp_data:
                 self.filenames.append(file)
+                self.data.extend(temp_data)
 
     def load_sample(self, filename):
         audio_csv = os.path.join(self.audio_path, f"{filename}.csv")
@@ -57,7 +61,7 @@ class VideoAudioDataset(Dataset):
 
         if not (os.path.exists(audio_csv) and os.path.exists(video_parquet)):
             raise FileNotFoundError(f"Missing files for {filename}")
-
+        temp_data = []
         try:
             audio_data = pd.read_csv(audio_csv)
             video_data = pd.read_parquet(video_parquet)
@@ -83,10 +87,10 @@ class VideoAudioDataset(Dataset):
                     # print(audio_features.shape)
 
                     if audio_features.shape[1] != 118:
-                        raise ValueError(
-                            f"Unexpected audio feature dimension in {filename}"
-                        )
-                        return None
+                        # raise ValueError(
+                        #     f"Unexpected audio feature dimension in {filename}"
+                        # )
+                        continue
 
                     min_length = min(len(audio_features), len(video_features))
                     audio_features = audio_features[:min_length]
@@ -94,13 +98,14 @@ class VideoAudioDataset(Dataset):
 
                     desync_values = video_group["desync"].astype(float).values[:min_length]
                     if not np.all(desync_values == desync_values[0]):
-                        raise ValueError(f"Inconsistent desync values in {filename}")
+                        # This is really only useful in debugging
+                        # raise ValueError(f"Inconsistent desync values in {filename}")
                         return None
 
                     y_offset = desync_values[0]
 
                     if y_offset < -OFFSET or y_offset > OFFSET:
-                        raise ValueError(f"y_offset {y_offset} out of range for {filename}")
+                        # raise ValueError(f"y_offset {y_offset} out of range for {filename}")
                         return None
 
                     video_features = torch.tensor(video_features, dtype=torch.float)
@@ -115,10 +120,11 @@ class VideoAudioDataset(Dataset):
 
                     y_offset = torch.tensor(y_offset, dtype=torch.float)
 
-                    return video_features, audio_features, min_length, y_offset
+                    # NOTE: Gian's version had a return here. This causes only a single data sequence per video. Fix that if
+                    # you want to keep the loading during runtime thing
+                    temp_data.append((video_features, audio_features, min_length, y_offset))
 
-            raise ValueError(f"No matching video group found for audio file {filename}")
-            return None
+            return temp_data
 
         except Exception as e:
             print(f"Error loading sample {filename}: {e}", flush=True)
@@ -140,20 +146,22 @@ class VideoAudioDataset(Dataset):
 
     def __getitem__(self, idx):
         filename = self.filenames[idx]
-
-        if filename in self.cache:
-            return self.cache[filename]
-        else:
-            try:
-                sample = self.load_sample(filename)
-                if len(self.cache) >= self.cache_size:
-                    remove_key = random.choice(list(self.cache.keys()))
-                    del self.cache[remove_key]
-                self.cache[filename] = sample
-                return sample
-            except Exception as e:
-                print(f"Failed to load sample {filename}: {e}", flush=True)
-                raise IndexError
+        data = self.data[idx]
+        return data
+        # Implement following if want, only after fixing the early return issue in dataloading for loop
+        # if filename in self.cache:
+        #     return self.cache[filename]
+        # else:
+        #     try:
+        #         sample = self.load_sample(filename)
+        #         if len(self.cache) >= self.cache_size:
+        #             remove_key = random.choice(list(self.cache.keys()))
+        #             del self.cache[remove_key]
+        #         self.cache[filename] = sample
+        #         return sample
+        #     except Exception as e:
+        #         print(f"Failed to load sample {filename}: {e}", flush=True)
+        #         raise IndexError
 
 
 def load_and_intersect_data(video_dir, audio_dir):
