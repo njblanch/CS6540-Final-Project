@@ -1,4 +1,4 @@
-# improved_transformer.py
+# custom_transformer.py
 
 import torch
 import torch.nn as nn
@@ -15,7 +15,11 @@ class LearnablePositionalEncoding(nn.Module):
     def forward(self, x, positions=None):
         if positions is None:
             batch_size, seq_len, _ = x.size()
-            positions = torch.arange(0, seq_len, device=x.device).unsqueeze(0).expand(batch_size, seq_len)
+            positions = (
+                torch.arange(0, seq_len, device=x.device)
+                .unsqueeze(0)
+                .expand(batch_size, seq_len)
+            )
         pos_embed = self.pos_embedding(positions)
         return self.dropout(x + pos_embed)
 
@@ -25,18 +29,18 @@ class GatedFusion(nn.Module):
     Gated fusion mechanism to combine audio and video features.
     """
 
-    def __init__(self, video_dim, audio_dim, d_model, gate_activation='sigmoid'):
+    def __init__(self, video_dim, audio_dim, d_model, gate_activation="sigmoid"):
         super(GatedFusion, self).__init__()
         self.fc = nn.Linear(video_dim + audio_dim, d_model)
-        if gate_activation == 'sigmoid':
+        if gate_activation == "sigmoid":
             self.gate = nn.Sequential(
                 nn.Linear(video_dim + audio_dim, d_model), nn.Sigmoid()
             )
-        elif gate_activation == 'softmax':
+        elif gate_activation == "softmax":
             self.gate = nn.Sequential(
                 nn.Linear(video_dim + audio_dim, d_model), nn.Softmax(dim=-1)
             )
-        elif gate_activation == 'tanh':
+        elif gate_activation == "tanh":
             self.gate = nn.Sequential(
                 nn.Linear(video_dim + audio_dim, d_model), nn.Tanh()
             )
@@ -101,8 +105,10 @@ class MultiModalTransformer(nn.Module):
         output_dim,
         max_seq_length=256,
         dropout=0.1,
+        max_offset=15,
     ):
         super(MultiModalTransformer, self).__init__()
+        self.max_offset = max_offset  # +- max frame offset for regression
 
         if d_model % n_heads_transformer != 0:
             raise ValueError(
@@ -170,8 +176,15 @@ class MultiModalTransformer(nn.Module):
                 if module.out_proj.bias is not None:
                     nn.init.constant_(module.out_proj.bias, 0)
 
-
-    def forward(self, video_features, audio_features, video_positions, audio_positions, mask=None, key_padding_mask=None):
+    def forward(
+        self,
+        video_features,
+        audio_features,
+        video_positions,
+        audio_positions,
+        mask=None,
+        key_padding_mask=None,
+    ):
         """
         Args:
             video_features: (batch_size, seq_len, video_dim)
@@ -182,8 +195,12 @@ class MultiModalTransformer(nn.Module):
             output: (batch_size, output_dim)
         """
         # Project features to the common dimension
-        video_features = self.video_proj(video_features)  # (batch_size, seq_len, d_model)
-        audio_features = self.audio_proj(audio_features)  # (batch_size, seq_len, d_model)
+        video_features = self.video_proj(
+            video_features
+        )  # (batch_size, seq_len, d_model)
+        audio_features = self.audio_proj(
+            audio_features
+        )  # (batch_size, seq_len, d_model)
 
         # Add positional encoding
         video_features = self.pos_encoder(video_features, positions=video_positions)
@@ -207,7 +224,9 @@ class MultiModalTransformer(nn.Module):
         )
 
         # Combine both cross-attended features
-        fused_features = (fused_features_video_to_audio + fused_features_audio_to_video) / 2
+        fused_features = (
+            fused_features_video_to_audio + fused_features_audio_to_video
+        ) / 2
 
         # Add [CLS] token
         batch_size, seq_len, _ = fused_features.size()
@@ -229,6 +248,6 @@ class MultiModalTransformer(nn.Module):
 
         # Final regression output
         output = self.output_layer(cls_output)  # (batch, output_dim)
-        output = self.output_activation(output) * 15  # Scale to [-15, 15]
+        output = self.output_activation(output) * self.max_offset
 
         return output

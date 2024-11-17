@@ -71,10 +71,10 @@ def compute_normalization(
                     video_tensor = torch.tensor(video_features, dtype=torch.float)
 
                     # Accumulate sums correctly per feature
-                    audio_sum += audio_tensor.sum(dim=0)           # Sum over sequence length
-                    audio_sq_sum += (audio_tensor ** 2).sum(dim=0)
+                    audio_sum += audio_tensor.sum(dim=0)  # Sum over sequence length
+                    audio_sq_sum += (audio_tensor**2).sum(dim=0)
                     video_sum += video_tensor.sum(dim=0)
-                    video_sq_sum += (video_tensor ** 2).sum(dim=0)
+                    video_sq_sum += (video_tensor**2).sum(dim=0)
                     count += min_length
 
         except Exception as e:
@@ -86,8 +86,8 @@ def compute_normalization(
         mean_video = video_sum / count
 
         # Compute variance and clamp to prevent negative values
-        variance_audio = (audio_sq_sum / count - mean_audio ** 2).clamp(min=1e-6)
-        variance_video = (video_sq_sum / count - mean_video ** 2).clamp(min=1e-6)
+        variance_audio = (audio_sq_sum / count - mean_audio**2).clamp(min=1e-6)
+        variance_video = (video_sq_sum / count - mean_video**2).clamp(min=1e-6)
 
         std_audio = variance_audio.sqrt()
         std_video = variance_video.sqrt()

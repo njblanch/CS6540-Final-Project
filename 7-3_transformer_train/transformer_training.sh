@@ -2,8 +2,8 @@
 
 #SBATCH --account=cs6540
 #SBATCH --job-name=Ttrain
-#SBATCH --output=log/Ttrain_4_output.log
-#SBATCH --error=log/Ttrain_4_error.log
+#SBATCH --output=log/Ttrain_5_output.log
+#SBATCH --error=log/Ttrain_5_error.log
 #SBATCH --ntasks=4
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=96GB
@@ -15,4 +15,4 @@ module purge
 # Job info
 my_job_header
 
-$HOME/miniconda3/envs/dl/bin/python transformer_training.py -v 4
+$HOME/miniconda3/envs/dl/bin/python transformer_training.py -v 5
