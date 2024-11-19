@@ -6,8 +6,9 @@ import torch.nn as nn
 from tqdm.auto import tqdm
 from torch.utils.data import DataLoader
 from sklearn.metrics import mean_absolute_error, r2_score
+import numpy as np
 
-from custom_3DCNN import AVsync_CNN
+from custom_3DCNN import AVsync_CNN, AVsync_CNN_MFCC
 from data_loading import load_dataset
 
 # Parse command-line arguments
@@ -18,8 +19,8 @@ VERSION = args.version
 
 # Hyperparameters
 EPOCHS = 250
-ALPHA_START = 1
-ALPHA_END = 0
+ALPHA_START = 10
+ALPHA_END = 1
 alphas = torch.linspace(ALPHA_START, ALPHA_END, EPOCHS)
 batch_size = 64
 learning_rate = 1e-4
@@ -28,7 +29,7 @@ weight_decay = 1e-5
 audio_dim = (118)
 video_dim = (8, 8, 16)
 output_dim = 1
-max_seq_length = 225  # 15 fps * 15 seconds
+max_seq_length = 90 # Changing to 15fps * 6 seconds 225  # 15 fps * 15 seconds
 
 # Paths and dataset parameters
 final_model_path = f"transformer_desync_model_final_v{VERSION}.pth"
@@ -38,7 +39,7 @@ audio_path = "/gpfs2/classes/cs6540/AVSpeech/5_audio/train"
 video_path = "/gpfs2/classes/cs6540/AVSpeech/6-1_visual_features/train_1024_cae"
 normalization_params_path = "normalization_params_cae.pth"
 
-max_data = {"train": 10000, "val": 2000, "test": 2000}
+max_data = {"train": 5000, "val": 1000, "test": 1000}
 # max_data = {"train": 100, "val": 20, "test": 20}
 
 # Load datasets
@@ -70,7 +71,7 @@ optimizer = torch.optim.Adam(
 )
 criterion = nn.MSELoss()
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-    optimizer, mode="min", factor=0.1, patience=3
+    optimizer, mode="min", factor=0.05, patience=5
 )
 best_val_loss = float("inf")
 
@@ -81,12 +82,28 @@ def variance_regularization(predictions, alpha):
     return alpha * (1.0 / (variance + 1e-6))
 
 
+def range_loss(y_pred):
+    # Penalize if the minimum predicted value is far from -7
+    penalty = torch.maximum(torch.tensor(0.0, device=y_pred.device), torch.min(y_pred) + 7)
+
+    # Penalize if the maximum predicted value is far from 7
+    penalty += torch.maximum(torch.tensor(0.0, device=y_pred.device), 7 - torch.max(y_pred))
+
+    # Encourage usage of the full range
+    range_width_penalty = torch.maximum(torch.tensor(0.0, device=y_pred.device),
+                                        14 - (torch.max(y_pred) - torch.min(y_pred)))
+    penalty += range_width_penalty
+
+    return penalty
+
+
 # Training Loop
 for epoch in tqdm(range(EPOCHS), desc="Epochs"):
     model.train()
     total_loss = 0.0
     total_primary_loss = 0.0
     total_reg_loss = 0.0
+    total_range_loss = 0.0
 
     for batch in train_loader:
         video_features, audio_features, actual_length, y_offset = batch
@@ -115,12 +132,14 @@ for epoch in tqdm(range(EPOCHS), desc="Epochs"):
         # Compute losses
         primary_loss = criterion(output, y_offset)
         reg_loss = variance_regularization(output, alpha=alphas[epoch])
-        loss = primary_loss + reg_loss
+        range_loss_val = range_loss(output)
+        loss = primary_loss + reg_loss + range_loss_val
 
         # Accumulate losses
         total_loss += loss.item()
         total_primary_loss += primary_loss.item()
         total_reg_loss += reg_loss.item()
+        total_range_loss += range_loss_val.item()
 
         # Backpropagation
         optimizer.zero_grad()
@@ -135,14 +154,16 @@ for epoch in tqdm(range(EPOCHS), desc="Epochs"):
     avg_loss = total_loss / len(train_loader)
     avg_primary_loss = total_primary_loss / len(train_loader)
     avg_reg_loss = total_reg_loss / len(train_loader)
+    avg_range_loss = total_range_loss / len(train_loader)
 
     print(
         f"\nEpoch {epoch + 1}/{EPOCHS}, Total Loss: {avg_loss:.4f}, "
-        f"Primary Loss: {avg_primary_loss:.4f}, Reg Loss: {avg_reg_loss:.4f}, "
+        f"Primary Loss: {avg_primary_loss:.4f}, Reg Loss: {avg_reg_loss:.4f}, Range Loss: {avg_range_loss:.4f}, "
         f"RMSE: {avg_primary_loss ** 0.5:.4f}", flush=True
     )
 
     # Validation Loop
+    all_predictions = []
     model.eval()
     total_val_loss = 0.0
     with torch.no_grad():
@@ -155,7 +176,6 @@ for epoch in tqdm(range(EPOCHS), desc="Epochs"):
 
             batch_size = video_features.size(0)
             seq_len = video_features.size(1)
-            print(batch_size)
 
             # Create key_padding_mask for validation
             key_padding_mask = torch.zeros(batch_size, seq_len, dtype=torch.bool, device=device)
@@ -175,9 +195,18 @@ for epoch in tqdm(range(EPOCHS), desc="Epochs"):
             loss = criterion(outputs, y_offset)
             total_val_loss += loss.item()
 
+            all_predictions.extend(outputs.cpu().numpy())
+
     avg_val_loss = total_val_loss / len(val_loader)
     print(f"Validation Loss: {avg_val_loss:.4f}, RMSE: {avg_val_loss ** 0.5:.4f}")
     scheduler.step(avg_val_loss)
+
+    hist, bin_edges = np.histogram(all_predictions, bins=50)
+
+    # Print the histogram (frequencies and bin edges)
+    print("Histogram of Predictions:")
+    for i in range(len(hist)):
+        print(f"Bin {i}: {bin_edges[i]} to {bin_edges[i + 1]} - Frequency: {hist[i]}")
 
     # Save the best model
     if avg_val_loss < best_val_loss:

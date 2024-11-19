@@ -8,7 +8,8 @@ from torch.utils.data import Dataset, DataLoader
 import random
 import numpy as np
 
-OFFSET = 7
+OFFSET = 15
+MFCC = False
 
 
 class VideoAudioDataset(Dataset):
@@ -42,6 +43,9 @@ class VideoAudioDataset(Dataset):
         if self.normalize:
             self.mean_audio = normalization_params["mean_audio"][:-2] # Change if normalization changes
             self.std_audio = normalization_params["std_audio"][:-2]
+            if MFCC:
+                self.mean_audio = self.mean_audio[1:13]
+                self.std_audio = self.std_audio[1:13]
             self.mean_video = normalization_params["mean_video"]
             self.std_video = normalization_params["std_video"]
         print(self.mean_audio.shape)
@@ -91,6 +95,10 @@ class VideoAudioDataset(Dataset):
                         #     f"Unexpected audio feature dimension in {filename}"
                         # )
                         continue
+
+                    # Only take MFCC data
+                    if MFCC:
+                        audio_features = audio_features[:, 1:13]
 
                     min_length = min(len(audio_features), len(video_features))
                     audio_features = audio_features[:min_length]
