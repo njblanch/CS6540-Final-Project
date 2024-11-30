@@ -185,22 +185,9 @@ class MultiModalTransformer(nn.Module):
         mask=None,
         key_padding_mask=None,
     ):
-        """
-        Args:
-            video_features: (batch_size, seq_len, video_dim)
-            audio_features: (batch_size, seq_len, audio_dim)
-            mask: (seq_len, seq_len) - attn_mask (optional)
-            key_padding_mask: (batch_size, seq_len) - mask for padded tokens (optional)
-        Returns:
-            output: (batch_size, output_dim)
-        """
         # Project features to the common dimension
-        video_features = self.video_proj(
-            video_features
-        )  # (batch_size, seq_len, d_model)
-        audio_features = self.audio_proj(
-            audio_features
-        )  # (batch_size, seq_len, d_model)
+        video_features = self.video_proj(video_features)  # (batch, seq, d_model)
+        audio_features = self.audio_proj(audio_features)  # (batch, seq, d_model)
 
         # Add positional encoding
         video_features = self.pos_encoder(video_features, positions=video_positions)
@@ -235,9 +222,22 @@ class MultiModalTransformer(nn.Module):
             (cls_tokens, fused_features), dim=1
         )  # (batch, seq + 1, d_model)
 
+        # Adjust key_padding_mask for Transformer Encoder
+        if key_padding_mask is not None:
+            cls_mask = torch.zeros(
+                (key_padding_mask.size(0), 1),
+                dtype=key_padding_mask.dtype,
+                device=key_padding_mask.device,
+            )
+            transformer_key_padding_mask = torch.cat(
+                [cls_mask, key_padding_mask], dim=1
+            )  # (batch, seq + 1)
+        else:
+            transformer_key_padding_mask = None
+
         # Pass through Transformer Encoder
         transformer_out = self.transformer_encoder(
-            fused_features
+            fused_features, src_key_padding_mask=transformer_key_padding_mask
         )  # (batch, seq + 1, d_model)
 
         # Extract [CLS] token representation

@@ -1,5 +1,4 @@
 # data_loading.py
-
 import os
 import pandas as pd
 from sklearn.model_selection import train_test_split
@@ -8,6 +7,7 @@ from torch.utils.data import Dataset, DataLoader
 import random
 import numpy as np
 import logging
+from collections import OrderedDict
 from tqdm.auto import tqdm
 
 logging.basicConfig(
@@ -30,65 +30,8 @@ class VideoAudioDataset(Dataset):
         max_length=225,
         normalize=True,
         cache_size=10000,
-    ):
-        """
-        Args:
-            clip_list (list of tuples): Each tuple contains (filename, clip_num).
-            video_path (str): Path to the video parquet files.
-            audio_path (str): Path to the audio CSV files.
-            normalization_params (dict): Normalization parameters.
-            max_length (int): Maximum sequence length.
-            normalize (bool): Whether to apply normalization.
-            cache_size (int): Number of clips to cache in memory.
-        """
-        self.clip_list = clip_list
-        self.video_path = video_path
-        self.audio_path = audio_path
-        self.normalization_params = normalization_params
-        self.max_length = max_length
-        self.normalize = normalize
-        self.cache_size = cache_size
-        self.cache = {}
-
-        if self.normalize:
-            self.mean_video = self.normalization_params["mean_video"]
-            self.std_video = self.normalization_params["std_video"]
-            self.mean_audio = self.normalization_params["mean_audio"]
-            self.std_audio = self.normalization_params["std_audio"]
-
-    def __len__(self):
-        return len(self.clip_list)
-
-    # data_loading.py
-
-
-import os
-import pandas as pd
-from sklearn.model_selection import train_test_split
-import torch
-from torch.utils.data import Dataset, DataLoader
-import random
-import numpy as np
-import logging
-from collections import OrderedDict
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler()],
-)
-
-
-class VideoAudioDataset(Dataset):
-    def __init__(
-        self,
-        clip_list,
-        video_path,
-        audio_path,
-        normalization_params,
-        max_length=225,
-        normalize=True,
-        cache_size=10000,
+        # y_mean=None,
+        # y_std=None,
     ):
         """
         Args:
@@ -108,6 +51,9 @@ class VideoAudioDataset(Dataset):
         self.normalize = normalize
         self.cache_size = cache_size
         self.cache = OrderedDict()  # To maintain insertion order for LRU
+
+        # self.y_mean = y_mean
+        # self.y_std = y_std
 
         if self.normalize:
             # Correct tensor copying to avoid warnings
@@ -180,6 +126,9 @@ class VideoAudioDataset(Dataset):
 
                         y_offset = video_clip_df["desync"].values.astype(float)
                         y_offset = y_offset.mean()
+
+                        # if self.y_mean is not None and self.y_std is not None:
+                        #     y_offset = (y_offset - self.y_mean) / self.y_std
 
                         video_features = video_clip_df.drop(
                             columns=["video_id", "clip_num", "desync", "frame_number"]
@@ -342,9 +291,9 @@ def load_dataset(
         )
 
     if load:
-        train_dataset = torch.load("train_dataset.pt")
-        val_dataset = torch.load("val_dataset.pt")
-        test_dataset = torch.load("test_dataset.pt")
+        train_dataset = torch.load("dataset/train_dataset_100k.pt")
+        val_dataset = torch.load("dataset/val_dataset_100k.pt")
+        test_dataset = torch.load("dataset/test_dataset_100k.pt")
         return train_dataset, val_dataset, test_dataset
 
     normalization_params = torch.load(normalization_params_path)
@@ -358,6 +307,7 @@ def load_dataset(
     num_train = data_sizes["train"]
     num_val = data_sizes["val"]
     num_test = data_sizes["test"]
+    num_total = num_train + num_val + num_test
 
     train_clips = []
     val_clips = []
@@ -367,74 +317,83 @@ def load_dataset(
     val_count = 0
     test_count = 0
 
-    for filename in tqdm(all_filenames):
-        video_file = os.path.join(video_path, f"{filename}.parquet")
-        audio_file = os.path.join(audio_path, f"{filename}.csv")
+    with tqdm(total=num_total, desc="Loading dataset") as pbar:
+        for filename in all_filenames:
+            if (
+                train_count >= num_train
+                and val_count >= num_val
+                and test_count >= num_test
+            ):
+                break
 
-        # Load video data to find clip_num
-        try:
-            video_df = pd.read_parquet(video_file)
-        except Exception as e:
-            logging.error(f"Error loading video file {video_file}: {e}")
-            continue
+            video_file = os.path.join(video_path, f"{filename}.parquet")
+            audio_file = os.path.join(audio_path, f"{filename}.csv")
 
-        video_df["clip_num"] = video_df["clip_num"].astype(int)
-        unique_clips_video = video_df["clip_num"].unique()
+            # Load video data to find clip_num
+            try:
+                video_df = pd.read_parquet(video_file)
+            except Exception as e:
+                logging.error(f"Error loading video file {video_file}: {e}")
+                pbar.update(4)
+                continue
 
-        # Load audio data to find video_number
-        try:
-            audio_df = pd.read_csv(audio_file)
-        except Exception as e:
-            logging.error(f"Error loading audio file {audio_file}: {e}")
-            continue
+            video_df["clip_num"] = video_df["clip_num"].astype(int)
+            unique_clips_video = video_df["clip_num"].unique()
 
-        audio_df["video_number"] = audio_df["video_number"].astype(int)
-        unique_clips_audio = audio_df["video_number"].unique()
+            # Load audio data to find video_number
+            try:
+                audio_df = pd.read_csv(audio_file)
+            except Exception as e:
+                logging.error(f"Error loading audio file {audio_file}: {e}")
+                pbar.update(4)
+                continue
 
-        # Matching video and audio clips
-        common_clips = set(unique_clips_video).intersection(set(unique_clips_audio))
-        clips = list(common_clips)
-        if not clips:
-            logging.warning(f"No common clips found for file {filename}. Skipping.")
-            logging.warning(f"Unique clips in video: {unique_clips_video}")
-            logging.warning(f"Unique clips in audio: {unique_clips_audio}")
-            continue
+            audio_df["video_number"] = audio_df["video_number"].astype(int)
+            unique_clips_audio = audio_df["video_number"].unique()
 
-        # Assign the entire video to a split based on current counts
-        if train_count + len(clips) <= num_train:
-            for clip_num in clips:
-                train_clips.append((filename, clip_num))
-            train_count += len(clips)
-        elif val_count + len(clips) <= num_val:
-            for clip_num in clips:
-                val_clips.append((filename, clip_num))
-            val_count += len(clips)
-        elif test_count + len(clips) <= num_test:
-            for clip_num in clips:
-                test_clips.append((filename, clip_num))
-            test_count += len(clips)
-        else:
-            # Assign to the split with the least current count
-            min_split = min(
-                [("train", train_count), ("val", val_count), ("test", test_count)],
-                key=lambda x: x[1],
-            )[0]
-            if min_split == "train":
+            # Matching video and audio clips
+            common_clips = set(unique_clips_video).intersection(set(unique_clips_audio))
+            clips = list(common_clips)
+            if not clips:
+                logging.warning(f"No common clips found for file {filename}. Skipping.")
+                logging.warning(f"Unique clips in video: {unique_clips_video}")
+                logging.warning(f"Unique clips in audio: {unique_clips_audio}")
+                pbar.update(4)
+                continue
+
+            # Assign the entire video to a split based on current counts
+            if train_count + len(clips) <= num_train:
                 for clip_num in clips:
                     train_clips.append((filename, clip_num))
                 train_count += len(clips)
-            elif min_split == "val":
+            elif val_count + len(clips) <= num_val:
                 for clip_num in clips:
                     val_clips.append((filename, clip_num))
                 val_count += len(clips)
-            else:
+            elif test_count + len(clips) <= num_test:
                 for clip_num in clips:
                     test_clips.append((filename, clip_num))
                 test_count += len(clips)
+            else:
+                # Assign to the split with the least current count
+                min_split = min(
+                    [("train", train_count), ("val", val_count), ("test", test_count)],
+                    key=lambda x: x[1],
+                )[0]
+                if min_split == "train":
+                    for clip_num in clips:
+                        train_clips.append((filename, clip_num))
+                    train_count += len(clips)
+                elif min_split == "val":
+                    for clip_num in clips:
+                        val_clips.append((filename, clip_num))
+                    val_count += len(clips)
+                else:
+                    for clip_num in clips:
+                        test_clips.append((filename, clip_num))
+                    test_count += len(clips)
 
-        # Early stopping if all counts are met
-        if train_count >= num_train and val_count >= num_val and test_count >= num_test:
-            break
+            pbar.update(4)
 
     logging.info(
         f"Assigned clips\nTrain: {len(train_clips)} (Requested: {num_train}), "

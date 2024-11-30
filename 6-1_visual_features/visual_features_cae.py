@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+# visual_features_cae.py
+
 import os
 import sys  # Added to handle stdout
 from tqdm import tqdm  # type: ignore
@@ -34,6 +36,7 @@ def parse_filename(filename):
         raise ValueError(f"Unexpected filename format: {filename}")
     desync = desync_ext.split(".")[0]  # removing .mp4
     return video_id, clip_num, desync
+
 
 def extract_features(
     path,
@@ -97,14 +100,14 @@ def extract_features_with_autoencoder(
 
 
 def extract_features_using_cae(
-        path,
-        preprocess,
-        autoencoder,
-        device,
-        fps,
-        batch_size=32,
-        test_debug=False,
-        lip_debug_dir=None,
+    path,
+    preprocess,
+    autoencoder,
+    device,
+    fps,
+    batch_size=32,
+    test_debug=False,
+    lip_debug_dir=None,
 ):
     frames = extract_frames(path, fps, test_debug, lip_debug_dir)
     if frames is None:
@@ -115,20 +118,26 @@ def extract_features_using_cae(
     reconstructed_frames = []
     with torch.no_grad():
         for i in range(0, len(inputs), batch_size):
-            batch = inputs[i: i + batch_size]
+            batch = inputs[i : i + batch_size]
             compressed_features, reconstructed_batch = autoencoder(batch)
 
-            compressed_features = compressed_features.view(compressed_features.size(0), -1)
+            compressed_features = compressed_features.view(
+                compressed_features.size(0), -1
+            )
             features.append(compressed_features.cpu().numpy())
 
             # Saving reconstructed frames
             if lip_debug_dir:
                 # Convert reconstructed frames to numpy and save as images
-                reconstructed_batch = reconstructed_batch.cpu().permute(0, 2, 3, 1).numpy()  # Convert to (N, H, W, C)
+                reconstructed_batch = (
+                    reconstructed_batch.cpu().permute(0, 2, 3, 1).numpy()
+                )  # Convert to (N, H, W, C)
 
                 for idx, frame in enumerate(reconstructed_batch):
                     frame_index = i + idx
-                    frame_path = os.path.join(lip_debug_dir, f"frame_{idx}_{frame_index:04d}.png")
+                    frame_path = os.path.join(
+                        lip_debug_dir, f"frame_{idx}_{frame_index:04d}.png"
+                    )
                     frame_bgr = (frame * 255).astype(np.uint8)  # Convert to 8-bit
                     cv2.imwrite(frame_path, frame_bgr)
 
@@ -198,7 +207,9 @@ def main():
         output_dir = "/gpfs2/classes/cs6540/AVSpeech/6-1_visual_features/test_1024_cae/"
         video_dir = "/gpfs2/classes/cs6540/AVSpeech/4_desynced/test_dist/"
     else:
-        output_dir = "/gpfs2/classes/cs6540/AVSpeech/6-1_visual_features/train_1024_cae/"
+        output_dir = (
+            "/gpfs2/classes/cs6540/AVSpeech/6-1_visual_features/train_1024_cae/"
+        )
         video_dir = "/gpfs2/classes/cs6540/AVSpeech/4_desynced/train_dist/"
 
     # Additional directory for saving lip frames during debug
@@ -273,7 +284,6 @@ def main():
     print(f"Found {len(video_files)} videos to process", flush=True)
 
     print(f"\nTime after setup: {time.ctime()}", flush=True)
-
 
     autoencoder = CNN_Autoencoder().to(device)
 

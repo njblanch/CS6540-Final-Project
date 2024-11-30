@@ -1,10 +1,12 @@
 # transformer_training.py
 
+import numpy as np
 import argparse
 import torch
 import torch.nn as nn
 from tqdm.auto import tqdm
 from torch.utils.data import DataLoader
+from torch.utils.data.sampler import SubsetRandomSampler
 from sklearn.metrics import mean_absolute_error, r2_score
 
 from custom_transformer import MultiModalTransformer  # Ensure this is correct
@@ -17,10 +19,10 @@ args = ap.parse_args()
 VERSION = args.version
 
 
-# Function for variance regularization
-def variance_regularization(predictions, alpha):
-    variance = torch.var(predictions)
-    return alpha * (1.0 / (variance + 1e-6))
+def variance_regularization(predictions, targets, alpha):
+    pred_var = torch.var(predictions)
+    target_var = torch.var(targets)
+    return alpha * ((pred_var - target_var) ** 2)
 
 
 def verify_unique_video_ids(train_dataset, val_dataset, test_dataset):
@@ -41,23 +43,23 @@ def verify_unique_video_ids(train_dataset, val_dataset, test_dataset):
 
 
 # Hyperparameters
-EPOCHS = 10
-ALPHA_START = 1
-ALPHA_END = 0.25
+EPOCHS = 50
+ALPHA_START = 40
+ALPHA_END = 20
 alphas = torch.linspace(ALPHA_START, ALPHA_END, EPOCHS)
-batch_size = 16
+batch_size = 128
 learning_rate = 1e-4
 weight_decay = 1e-5
 
 audio_dim = 120
 video_dim = 1024
-n_heads_transformer = 8
+n_heads_transformer = 4
 num_layers = 2
-d_model = 384  # Ensure d_model is divisible by n_heads_transformer (384 / 8 = 48)
-dim_feedforward = 256
+d_model = 128  # Ensure d_model is divisible by n_heads_transformer (256 / 4 = 64)
+dim_feedforward = 128
 output_dim = 1
 max_seq_length = 225  # 15 fps * 15 seconds
-dropout = 0.1
+dropout = 0.2
 
 # Paths and dataset parameters
 final_model_path = f"transformer_desync_model_final_v{VERSION}.pth"
@@ -68,7 +70,18 @@ audio_path = "../5_audio/train"
 video_path = "../6-1_visual_features/train_1024_cae"
 normalization_params_path = "normalization_params_cae.pth"
 
-max_data = {"train": 1000, "val": 200, "test": 200}
+total_data = 100000
+val_split = 0.1
+test_split = 0.1
+
+val_amt = int(total_data * val_split)
+test_amt = int(total_data * test_split)
+train_amt = total_data - val_amt - test_amt
+
+print(
+    f"Getting {train_amt} training samples, {val_amt} validation samples, and {test_amt} test samples."
+)
+max_data = {"train": train_amt, "val": val_amt, "test": test_amt}
 
 # Load datasets
 train_dataset, val_dataset, test_dataset = load_dataset(
@@ -76,12 +89,24 @@ train_dataset, val_dataset, test_dataset = load_dataset(
     audio_path=audio_path,
     normalization_params_path=normalization_params_path,
     data_sizes=max_data,
-    save=True,
+    # save=True,
+    load=True,
 )
 
-train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
-test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+
+# Limiting each epoch to 10,000 samples for faster training
+sampler = SubsetRandomSampler(
+    np.random.choice(range(len(train_dataset)), 10000, replace=False)
+)
+train_loader = DataLoader(
+    train_dataset, batch_size=batch_size, num_workers=4, sampler=sampler
+)
+val_loader = DataLoader(
+    val_dataset, batch_size=batch_size, num_workers=4, sampler=sampler
+)
+test_loader = DataLoader(
+    test_dataset, batch_size=batch_size, num_workers=4, sampler=sampler
+)
 
 verify_unique_video_ids(train_dataset, val_dataset, test_dataset)
 
@@ -120,6 +145,10 @@ best_val_loss = float("inf")
 # Move alphas to device
 alphas = alphas.to(device)
 
+# creating preds.csv file
+with open(f"log/preds_{VERSION}.csv", "w") as f:
+    f.write("video_id,prediction,actual,train\n")
+
 # Training Loop
 for epoch in tqdm(range(EPOCHS), desc="Epochs"):
     model.train()
@@ -127,7 +156,7 @@ for epoch in tqdm(range(EPOCHS), desc="Epochs"):
     total_primary_loss = 0.0
     total_reg_loss = 0.0
 
-    for batch in train_loader:
+    for batch in tqdm(train_loader, desc="Batches", leave=False):
         try:
             video_features, audio_features, actual_length, y_offset = batch
 
@@ -138,13 +167,12 @@ for epoch in tqdm(range(EPOCHS), desc="Epochs"):
             batch_size_current = video_features.size(0)
             seq_len = video_features.size(1)
 
-            # Create key_padding_mask based on actual sequence lengths
-            key_padding_mask = torch.zeros(
-                batch_size_current, seq_len, dtype=torch.bool, device=device
-            )
-            for i, length in enumerate(actual_length):
-                if length < seq_len:
-                    key_padding_mask[i, length:] = True  # True indicates padding
+            lengths = actual_length.to(device)
+            seq_range = torch.arange(seq_len, device=device)
+            key_padding_mask = seq_range.unsqueeze(0) >= lengths.unsqueeze(1)
+
+            # Vectorized positions
+            positions = seq_range.unsqueeze(0).expand(batch_size_current, seq_len)
 
             # Generate positions for positional encoding
             positions = torch.zeros(
@@ -164,15 +192,29 @@ for epoch in tqdm(range(EPOCHS), desc="Epochs"):
                 key_padding_mask=key_padding_mask,
             ).view(-1)
 
+            # adding to preds.csv
+            with open(f"log/preds_{VERSION}.csv", "a") as f:
+                for i in range(len(output)):
+                    f.write(
+                        f"{train_dataset.clip_list[i][0]},{output[i].item()},{y_offset[i].item()},1\n"
+                    )
+
             # Compute losses
             primary_loss = criterion(output, y_offset)
             reg_loss = variance_regularization(output, alphas[epoch])
             loss = primary_loss + reg_loss
+            variance = torch.var(output)
 
             # Accumulate losses
             total_loss += loss.item()
             total_primary_loss += primary_loss.item()
             total_reg_loss += reg_loss.item()
+
+            print(
+                f"Loss: {loss.item():.4f}, Primary Loss: {primary_loss.item():.4f}, "
+                f"Reg Loss: {reg_loss.item():.4f}, Variance: {variance.item():.4f}",
+                flush=True,
+            )
 
             # Backpropagation
             loss.backward()
@@ -238,9 +280,18 @@ for epoch in tqdm(range(EPOCHS), desc="Epochs"):
                     key_padding_mask=key_padding_mask,
                 ).view(-1)
 
+                with open(f"log/preds_{VERSION}.csv", "a") as f:
+                    for i in range(len(outputs)):
+                        f.write(
+                            f"{val_dataset.clip_list[i][0]},{outputs[i].item()},{y_offset[i].item()},0\n"
+                        )
+
                 # Compute loss
                 loss = criterion(outputs, y_offset)
                 total_val_loss += loss.item()
+
+                print(f"Validation Loss: {loss.item():.4f}", flush=True)
+
             except IndexError:
                 # Skip problematic samples
                 continue
