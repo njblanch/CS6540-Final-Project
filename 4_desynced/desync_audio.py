@@ -2,6 +2,7 @@ import os
 import random
 import sys
 from moviepy.editor import VideoFileClip
+import time
 
 FPS = 15
 MAX_SHIFT_FRAMES = 30
@@ -17,8 +18,13 @@ def desync_audio(video_path, batch_folder):
     try:
         clip = VideoFileClip(video_path)
     except:
-        print(f"{batch_folder}: FAILED to read {video_path}")
-        return
+        print(f"{batch_folder}: Error reading file, trying again {video_path}", flush=True)
+        try: 
+            time.sleep(1)
+            clip = VideoFileClip(video_path)
+        except:
+            print(f"{batch_folder}: FAILED to read {video_path}", flush=True)
+            return
     video_duration = clip.duration  # In seconds
 
     # 1. Trim video by one second on both sides
@@ -44,8 +50,13 @@ def desync_audio(video_path, batch_folder):
     try:
         desynced_clip.write_videofile(output_path, codec="libx264", audio_codec="aac")
     except:
-        print(f"{batch_folder}: FAILED to write {output_path}")
-        return
+        print(f"{batch_folder}: Error writing file, trying again {output_path}", flush=True)
+        try:
+            time.sleep(1)
+            desynced_clip.write_videofile(output_path, codec="libx264", audio_codec="aac")
+        except:
+            print(f"{batch_folder}: FAILED to write {output_path}", flush=True)
+            return
 
 # Function to check if the batch has already been processed
 def is_batch_completed(batch_name):
@@ -66,12 +77,13 @@ def delete_output_videos(videos_to_process):
                     try:
                         os.remove(file_path)
                     except:
+                        print(f"{batch_folder}: Could not delete {file_path}", flush=True)
                         continue
-                    print(f"Deleted {file_path}")
+                    print(f"{batch_folder}: Deleted {file_path}", flush=True)
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python script.py <batch_folder> [override=True/False]")
+        print("Usage: python script.py <batch_folder> [override=True/False]", flush=True)
         sys.exit(1)
 
     # Get the folder passed as a command-line argument
@@ -85,7 +97,7 @@ if __name__ == "__main__":
     
     # Ensure the folder exists
     if not os.path.exists(batch_folder_path):
-        print(f"Error: Folder {batch_folder_path} does not exist.")
+        print(f"{batch_folder}: Error: Folder {batch_folder_path} does not exist.", flush=True)
         sys.exit(1)
 
     # List all videos in the specified batch subfolder and its subfolders
@@ -96,16 +108,16 @@ if __name__ == "__main__":
                 videos_to_process.append(file)
 
     if not videos_to_process:
-        print(f"No video files found in {batch_folder_path}.")
+        print(f"{batch_folder}: No video files found in {batch_folder_path}.", flush=True)
         sys.exit(1)
 
     # Check if the batch has already been processed
     if is_batch_completed(batch_folder) or override:
         if override:
-            print(f"Batch {batch_folder} already processed. Deleting output videos due to override.")
+            print(f"{batch_folder}: Batch already processed. Deleting output videos due to override.", flush=True)
             delete_output_videos(videos_to_process)
         else:
-            print(f"Batch {batch_folder} already processed. Use override=True to reprocess.")
+            print(f"{batch_folder}: Batch already processed. Use override=True to reprocess.", flush=True)
             sys.exit(1)
 
     # Process videos from 'downloaded_segments' that match the video names
@@ -114,11 +126,11 @@ if __name__ == "__main__":
         if os.path.exists(video_path):
             desync_audio(video_path, batch_folder)
         else:
-            print(f"Video {video} not found in {input_dir}. Skipping.")
+            print(f"{batch_folder}: Video {video} not found in {input_dir}. Skipping.", flush=True)
 
     # Write the completed folder to the text file
     if not is_batch_completed(batch_folder):
         with open(completed_batches_file, "a") as f:
             f.write(f"{batch_folder}\n")
 
-    print(f"Completed processing for batch: {batch_folder}")
+    print(f"{batch_folder}: Completed processing for batch", flush=True)
