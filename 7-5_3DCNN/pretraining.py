@@ -10,6 +10,8 @@ from sklearn.model_selection import train_test_split
 import argparse
 from tqdm.auto import tqdm
 import logging
+from sklearn.metrics import accuracy_score
+
 
 # Argument Parsing
 parser = argparse.ArgumentParser()
@@ -21,7 +23,7 @@ VERSION = args.version if args.version else "-1"
 # Logging Configuration
 log_dir = "log"
 os.makedirs(log_dir, exist_ok=True)
-log_filename = os.path.join(log_dir, f"audio_visual_sync_model_{VERSION}.log")
+log_filename = os.path.join(log_dir, f"pretraining_model_{VERSION}.log")
 # If the log file exists, delete it
 if os.path.exists(log_filename):
     os.remove(log_filename)
@@ -40,10 +42,11 @@ FRAME_RATE = 15
 MFCC_FEATURES = 12  # mfcc_2 to mfcc_13
 NUM_EPOCHS = 20
 BATCH_SIZE = 32
-LEARNING_RATE = 1e-4
+LEARNING_RATE = 1e-3
 SUBSET_SIZE = 0.05  # Proportion of data to use
 
-DROPOUT = 0.5
+# param for number of random blocks to take per clip
+BLOCKS_PER_CLIP = 10
 
 # Model Definitions
 
@@ -53,12 +56,12 @@ class VisualNetwork(nn.Module):
         super(VisualNetwork, self).__init__()
         self.conv3d_1 = nn.Conv3d(1, 64, kernel_size=(3, 3, 3), padding=(1, 1, 1))
         self.pool3d_1 = nn.MaxPool3d(kernel_size=(2, 2, 2))
-        self.dropout_1 = nn.Dropout3d(p=DROPOUT)
+        self.dropout_1 = nn.Dropout3d(p=0.5)
 
         self.conv3d_2 = nn.Conv3d(64, 32, kernel_size=(3, 3, 3), padding=(1, 1, 1))
         self.batch_norm_1 = nn.BatchNorm3d(32)
         self.pool3d_2 = nn.MaxPool3d(kernel_size=(1, 2, 2))
-        self.dropout_2 = nn.Dropout3d(p=DROPOUT)
+        self.dropout_2 = nn.Dropout3d(p=0.5)
 
         # Calculate the flattened feature size after conv and pooling layers
         # Input: (1, BLOCK_SIZE, 32, 32)
@@ -131,27 +134,25 @@ class AudioNetwork(nn.Module):
         return x
 
 
-class FusionNetwork(nn.Module):
+class PretrainingNetwork(nn.Module):
     def __init__(self):
-        super(FusionNetwork, self).__init__()
-        self.fc1 = nn.Linear(2048, 512)
-        self.fc2 = nn.Linear(512, 128)
-        self.fc3 = nn.Linear(128, 1)
+        super(PretrainingNetwork, self).__init__()
+        self.fc1 = nn.Linear(2048, 1024)
+        self.fc2 = nn.Linear(1024, 2)
 
     def forward(self, visual_feat, audio_feat):
         x = torch.cat((visual_feat, audio_feat), dim=1)  # Concatenate features
         x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        x = self.fc3(x)  # Output scalar d
+        x = F.softmax(self.fc2(x), dim=1)
         return x
 
 
-class AudioVisualModel(nn.Module):
+class PretrainingAudioVisualModel(nn.Module):
     def __init__(self, num_mfcc_rows, num_mfcc_features=MFCC_FEATURES):
-        super(AudioVisualModel, self).__init__()
+        super(PretrainingAudioVisualModel, self).__init__()
         self.visual_network = VisualNetwork()
         self.audio_network = AudioNetwork(num_mfcc_rows, num_mfcc_features)
-        self.fusion_network = FusionNetwork()
+        self.fusion_network = PretrainingNetwork()
 
     def forward(self, video_input, audio_input):
         visual_feat = self.visual_network(video_input)
@@ -181,6 +182,8 @@ class AudioVisualSyncDataset(Dataset):
         self.visual_dir = visual_dir
         self.block_size = block_size
         self.drift_range = drift_range
+        self.shift_range = np.concatenate((np.arange(-12, -4), np.arange(5, 13)))    # from -12 to -5 (exclusive of -4)
+
         self.frame_rate = frame_rate
         self.step_size = step_size
         self.preload_data = preload_data
@@ -223,16 +226,15 @@ class AudioVisualSyncDataset(Dataset):
                 clip_video_id = clip["video_id"]
                 clip_num = clip["clip_num"]
                 desync = int(clip['desync'])
-                print(desync, flush=True)
 
                 video_clip_df = visual_df[
                     (visual_df["video_id"] == clip_video_id)
                     & (visual_df["clip_num"] == clip_num)
-                    ].reset_index(drop=True)
+                ].reset_index(drop=True)
                 audio_clip_df = audio_df[
                     (audio_df["video_id"] == clip_video_id)
                     & (audio_df["clip_num"] == clip_num)
-                    ].reset_index(drop=True)
+                ].reset_index(drop=True)
 
                 if video_clip_df.empty and audio_clip_df.empty:
                     logging.warning(
@@ -268,56 +270,60 @@ class AudioVisualSyncDataset(Dataset):
                     )
                 )
 
-                for t in range(0, total_frames - self.block_size + 1, self.step_size):
-                    video_block_df = video_clip_df.iloc[t: t + self.block_size]
-                    start_time_ms = (-desync + t) * self.frame_duration_ms
+                # Randomly select certain number of clips
+                for i in range(BLOCKS_PER_CLIP):
+                    random_start_frame = random.randint(0, total_frames - self.block_size)
 
-                    for d in range(-self.drift_range, self.drift_range + 1):
-                        drift_time_ms = d * self.frame_duration_ms
-                        drifted_start_time_ms = start_time_ms + drift_time_ms
-                        drifted_end_time_ms = drifted_start_time_ms + (
-                                self.block_size * self.frame_duration_ms
-                        )
+                    # Randomly determine if synced or not
+                    is_desynchronized = random.choice([0, 1])  # 0 = synchronized, 1 = desynchronized
 
-                        if (
-                                drifted_start_time_ms < 0
-                                or drifted_end_time_ms > total_duration_ms
-                        ):
-                            continue
+                    # Create the label vector [synchronized, desynchronized]
+                    label = np.zeros(2, dtype=np.float32)
+                    label[is_desynchronized] = 1.0  # Set either synchronized or desynchronized as 1
 
-                        mfcc_start_idx = int(
-                            np.round(drifted_start_time_ms / self.mfcc_increment_ms)
-                        )
-                        mfcc_end_idx = mfcc_start_idx + fixed_num_mfcc_rows
+                    desync_amount = 0
+                    if is_desynchronized:
+                        desync_amount = np.random.choice(self.shift_range)
 
-                        if mfcc_start_idx < 0 or mfcc_end_idx > total_mfcc_rows:
-                            continue
+                    video_block_df = video_clip_df.iloc[random_start_frame : random_start_frame + self.block_size]
+                    start_time_ms = (-desync + random_start_frame + desync_amount) * self.frame_duration_ms
+                    end_time_ms = start_time_ms + self.block_size * self.frame_duration_ms
 
-                        audio_block_df = audio_clip_df.iloc[mfcc_start_idx:mfcc_end_idx]
+                    if start_time_ms < 0 or end_time_ms > total_duration_ms:
+                        continue
 
-                        if len(audio_block_df) != fixed_num_mfcc_rows:
-                            continue
+                    mfcc_start_idx = int(
+                        np.round(start_time_ms / self.mfcc_increment_ms)
+                    )
+                    mfcc_end_idx = mfcc_start_idx + fixed_num_mfcc_rows
 
-                        video_features = video_block_df.filter(
-                            regex="^feature_"
-                        ).values.astype(np.float32)
-                        audio_features = audio_block_df.filter(
-                            regex="^mfcc_"
-                        ).values.astype(np.float32)
-                        label = np.float32(d)
+                    if mfcc_start_idx < 0 or mfcc_end_idx > total_mfcc_rows:
+                        continue
 
-                        sample = {
-                            "video_features": video_features,
-                            "audio_features": audio_features,
-                            "label": label,
-                        }
+                    audio_block_df = audio_clip_df.iloc[mfcc_start_idx:mfcc_end_idx]
 
-                        if self.preload_data:
-                            key = f"{video_id}_{clip_num}_{t}_{d}"
-                            self.preloaded_data[key] = sample
-                            self.samples.append(key)
-                        else:
-                            self.samples.append(sample)
+                    if len(audio_block_df) != fixed_num_mfcc_rows:
+                        continue
+
+                    video_features = video_block_df.filter(
+                        regex="^feature_"
+                    ).values.astype(np.float32)
+                    audio_features = audio_block_df.filter(
+                        regex="^mfcc_"
+                    ).values.astype(np.float32)
+
+                    sample = {
+                        "video_features": video_features,
+                        "audio_features": audio_features,
+                        "label": label,
+                    }
+
+                    if self.preload_data:
+                        key = f"{video_id}_{clip_num}_{i}_{label}"
+                        self.preloaded_data[key] = sample
+                        self.samples.append(key)
+                    else:
+                        self.samples.append(sample)
 
     def __len__(self):
         return len(self.samples)
@@ -440,16 +446,18 @@ def main():
     logging.info(f"Fixed number of MFCC rows per block: {fixed_num_mfcc_rows}")
 
     # Instantiate the model
-    model = AudioVisualModel(num_mfcc_rows=fixed_num_mfcc_rows).to(device)
+    model = PretrainingAudioVisualModel(num_mfcc_rows=fixed_num_mfcc_rows).to(device)
     logging.info("Model instantiated.")
 
     # Define loss function and optimizer
-    criterion = nn.MSELoss()
+    criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
-    rmses = []
+    losses = []
 
     for epoch in tqdm(range(NUM_EPOCHS), desc="Epochs"):
         logging.info(f"Starting Epoch {epoch+1}/{NUM_EPOCHS}")
+        all_predictions = []
+        all_labels = []
 
         # Randomly sample 25% of the train files
         sample_size = max(1, int(len(train_files) * 0.25))
@@ -481,7 +489,7 @@ def main():
 
                 optimizer.zero_grad()
                 outputs = model(video_batch, audio_batch)
-                loss = criterion(outputs.squeeze(), labels)
+                loss = criterion(outputs, labels)
                 loss.backward()
                 optimizer.step()
 
@@ -520,15 +528,25 @@ def main():
                     labels = labels.to(device)
 
                     outputs = model(video_batch, audio_batch)
-                    loss = criterion(outputs.squeeze(), labels)
+                    loss = criterion(outputs, labels)
 
                     total_test_loss += loss.item() * video_batch.size(0)
-                    rmses.append(torch.sqrt(loss).item())
+                    losses.append(torch.sqrt(loss).item())
 
-                    pbar.update(1)
+                    _, predicted_labels = torch.max(outputs, dim=1)  # Get the predicted class
+                    _, true_labels = torch.max(labels, dim=1)  # Get the true class from one-hot labels
+
+                    # Store the predicted and true labels for accuracy calculation
+                    all_predictions.extend(predicted_labels.cpu().numpy())  # Convert to numpy for accuracy_score
+                    all_labels.extend(true_labels.cpu().numpy())
+
+                pbar.update(1)
 
         avg_test_loss = total_test_loss / len(test_dataset)
         logging.info(f"Epoch {epoch+1}: Validation Loss: {avg_test_loss:.4f}")
+        accuracy = accuracy_score(all_labels, all_predictions)
+        logging.info(f"Epoch {epoch+1}: Accuracy: {accuracy:.4f}")
+
 
         # Save the best model
         if epoch == 0:
@@ -553,7 +571,7 @@ def main():
     )
 
     # Optionally, save RMSEs if needed
-    rmses = np.array(rmses)
+    rmses = np.array(losses)
     np.save(f"rmse_history_{VERSION}.npy", rmses)
     logging.info(f"RMSE history saved as 'rmse_history_{VERSION}.npy'.")
 
