@@ -38,10 +38,10 @@ BLOCK_SIZE = 8
 DRIFT_RANGE = 7
 FRAME_RATE = 15
 MFCC_FEATURES = 12  # mfcc_2 to mfcc_13
-NUM_EPOCHS = 10
+NUM_EPOCHS = 20
 BATCH_SIZE = 32
-LEARNING_RATE = 1e-4
-SUBSET_SIZE = 0.01  # Proportion of data to use
+LEARNING_RATE = 1e-3
+SUBSET_SIZE = 0.05  # Proportion of data to use
 
 # Model Definitions
 
@@ -215,20 +215,21 @@ class AudioVisualSyncDataset(Dataset):
                 logging.error(f"Error loading files for video_id {video_id}: {e}")
                 continue
 
-            clip_keys = visual_df[["video_id", "clip_num"]].drop_duplicates()
+            clip_keys = visual_df[["video_id", "clip_num", "desync"]].drop_duplicates()
 
             for _, clip in clip_keys.iterrows():
                 clip_video_id = clip["video_id"]
                 clip_num = clip["clip_num"]
+                desync = int(clip['desync'])
 
                 video_clip_df = visual_df[
                     (visual_df["video_id"] == clip_video_id)
                     & (visual_df["clip_num"] == clip_num)
-                ].reset_index(drop=True)
+                    ].reset_index(drop=True)
                 audio_clip_df = audio_df[
                     (audio_df["video_id"] == clip_video_id)
                     & (audio_df["clip_num"] == clip_num)
-                ].reset_index(drop=True)
+                    ].reset_index(drop=True)
 
                 if video_clip_df.empty and audio_clip_df.empty:
                     logging.warning(
@@ -265,19 +266,19 @@ class AudioVisualSyncDataset(Dataset):
                 )
 
                 for t in range(0, total_frames - self.block_size + 1, self.step_size):
-                    video_block_df = video_clip_df.iloc[t : t + self.block_size]
-                    start_time_ms = t * self.frame_duration_ms
+                    video_block_df = video_clip_df.iloc[t: t + self.block_size]
+                    start_time_ms = (desync + t) * self.frame_duration_ms
 
                     for d in range(-self.drift_range, self.drift_range + 1):
                         drift_time_ms = d * self.frame_duration_ms
                         drifted_start_time_ms = start_time_ms + drift_time_ms
                         drifted_end_time_ms = drifted_start_time_ms + (
-                            self.block_size * self.frame_duration_ms
+                                self.block_size * self.frame_duration_ms
                         )
 
                         if (
-                            drifted_start_time_ms < 0
-                            or drifted_end_time_ms > total_duration_ms
+                                drifted_start_time_ms < 0
+                                or drifted_end_time_ms > total_duration_ms
                         ):
                             continue
 
@@ -386,15 +387,16 @@ def read_filenames(filename):
 
 
 def main():
-    audio_dir = "../5-2_audio/train/"
-    visual_dir = "../6-2_visual_features/train_optical/"
-
+    audio_dir = "/gpfs2/classes/cs6540/AVSpeech/5-2_audio/train/"
+    visual_dir = "/gpfs2/classes/cs6540/AVSpeech/6-2_visual_features/train_optical/"
+    # For version of split
+    v = 3
     # Check if split files exist
     if (
-        not os.path.exists("all_filenames.txt")
-        or not os.path.exists("train_filenames.txt")
-        or not os.path.exists("val_filenames.txt")
-        or not os.path.exists("test_filenames.txt")
+        not os.path.exists(f"all_filenames_{v}.txt")
+        or not os.path.exists(f"train_filenames_{v}.txt")
+        or not os.path.exists(f"val_filenames_{v}.txt")
+        or not os.path.exists(f"test_filenames_{v}.txt")
     ):
 
         # Get common filenames with SUBSET_SIZE proportion
@@ -403,22 +405,22 @@ def main():
             logging.error("No common files found. Exiting.")
             return
 
-        write_filenames("all_filenames.txt", common_files)
+        write_filenames(f"all_filenames_{v}.txt", common_files)
 
         # Split filenames
         train_files, val_files, test_files = split_filenames(common_files)
-        write_filenames("train_filenames.txt", train_files)
-        write_filenames("val_filenames.txt", val_files)
-        write_filenames("test_filenames.txt", test_files)
+        write_filenames(f"train_filenames_{v}.txt", train_files)
+        write_filenames(f"val_filenames_{v}.txt", val_files)
+        write_filenames(f"test_filenames_{v}.txt", test_files)
 
         logging.info(
             f"Generated train, val, test splits with SUBSET_SIZE={SUBSET_SIZE}"
         )
     else:
-        common_files = read_filenames("all_filenames.txt")
-        train_files = read_filenames("train_filenames.txt")
-        val_files = read_filenames("val_filenames.txt")
-        test_files = read_filenames("test_filenames.txt")
+        common_files = read_filenames(f"all_filenames_{v}.txt")
+        train_files = read_filenames(f"train_filenames_{v}.txt")
+        val_files = read_filenames(f"val_filenames_{v}.txt")
+        test_files = read_filenames(f"test_filenames_{v}.txt")
 
         logging.info("Loaded existing train, val, test splits.")
 
@@ -458,6 +460,7 @@ def main():
             audio_dir=audio_dir,
             visual_dir=visual_dir,
             preload_data=True,
+            step_size=8
         )
         train_dataloader = DataLoader(
             train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4
