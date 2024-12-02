@@ -38,10 +38,10 @@ BLOCK_SIZE = 8
 DRIFT_RANGE = 7
 FRAME_RATE = 15
 MFCC_FEATURES = 12  # mfcc_2 to mfcc_13
-NUM_EPOCHS = 50
+NUM_EPOCHS = 20
 BATCH_SIZE = 32
 LEARNING_RATE = 1e-4
-SUBSET_SIZE = 0.05  # Proportion of data to use
+SUBSET_SIZE = 0.2  # Proportion of data to use formerly 0.05
 
 DROPOUT = 0.5
 
@@ -223,7 +223,7 @@ class AudioVisualSyncDataset(Dataset):
                 clip_video_id = clip["video_id"]
                 clip_num = clip["clip_num"]
                 desync = int(clip['desync'])
-                print(desync, flush=True)
+                # print(desync, flush=True)
 
                 video_clip_df = visual_df[
                     (visual_df["video_id"] == clip_video_id)
@@ -386,6 +386,12 @@ def read_filenames(filename):
         return [line.strip() for line in f]
 
 
+def variance_regularization(predictions, alpha=0.01):
+    variance = torch.var(predictions)
+    # Regularization term
+    return alpha * (1.0 / (variance + 1e-6))
+
+
 # Main Training Script
 
 
@@ -470,7 +476,10 @@ def main():
 
         # Training loop with tqdm
         model.train()
+        alph = 0.5
         total_train_loss = 0
+        total_train_mse_loss = 0
+        total_train_var_loss = 0
         with tqdm(
             total=len(train_dataloader), desc="Training Batches", leave=False
         ) as pbar:
@@ -480,16 +489,25 @@ def main():
                 labels = labels.to(device)
 
                 optimizer.zero_grad()
-                outputs = model(video_batch, audio_batch)
-                loss = criterion(outputs.squeeze(), labels)
+                outputs = model(video_batch, audio_batch).squeeze()
+                mse_loss = criterion(outputs, labels)
+
+                # Variance loss
+                var_loss = variance_regularization(outputs, alpha=alph)
+                loss = mse_loss + var_loss # Full loss
                 loss.backward()
                 optimizer.step()
 
                 total_train_loss += loss.item() * video_batch.size(0)
+                total_train_mse_loss += mse_loss.item() * video_batch.size(0)
+                total_train_var_loss += var_loss.item() * video_batch.size(0)
                 pbar.update(1)
 
         avg_train_loss = total_train_loss / len(train_dataset)
-        logging.info(f"Epoch {epoch+1}: Training Loss: {avg_train_loss:.4f}")
+        avg_mse_loss = total_train_mse_loss / len(train_dataset)
+        avg_var_loss = total_train_var_loss / len(train_dataset)
+        logging.info(f"Epoch {epoch+1}: Training Loss: {avg_train_loss:.4f}, "
+                     f"MSELoss: {avg_mse_loss}, VarLoss: {avg_var_loss}")
 
         # Randomly sample 25% of the test files
         test_sample_size = max(1, int(len(test_files) * 0.25))

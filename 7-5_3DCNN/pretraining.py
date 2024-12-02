@@ -42,13 +42,14 @@ FRAME_RATE = 15
 MFCC_FEATURES = 12  # mfcc_2 to mfcc_13
 NUM_EPOCHS = 20
 BATCH_SIZE = 32
-LEARNING_RATE = 1e-3
+LEARNING_RATE = 1e-4
 SUBSET_SIZE = 0.05  # Proportion of data to use
 
 # param for number of random blocks to take per clip
 BLOCKS_PER_CLIP = 10
 
 # Model Definitions
+DROPOUT = 0.5
 
 
 class VisualNetwork(nn.Module):
@@ -56,18 +57,24 @@ class VisualNetwork(nn.Module):
         super(VisualNetwork, self).__init__()
         self.conv3d_1 = nn.Conv3d(1, 64, kernel_size=(3, 3, 3), padding=(1, 1, 1))
         self.pool3d_1 = nn.MaxPool3d(kernel_size=(2, 2, 2))
-        self.dropout_1 = nn.Dropout3d(p=0.5)
+        self.dropout_1 = nn.Dropout3d(p=DROPOUT)
 
         self.conv3d_2 = nn.Conv3d(64, 32, kernel_size=(3, 3, 3), padding=(1, 1, 1))
         self.batch_norm_1 = nn.BatchNorm3d(32)
         self.pool3d_2 = nn.MaxPool3d(kernel_size=(1, 2, 2))
-        self.dropout_2 = nn.Dropout3d(p=0.5)
+        self.dropout_2 = nn.Dropout3d(p=DROPOUT)
+
+        self.conv3d_3 = nn.Conv3d(32, 32, kernel_size=(3, 3, 3), padding=(1, 1, 1))
+        self.batch_norm_2 = nn.BatchNorm3d(32)
+        self.pool3d_3 = nn.MaxPool3d(kernel_size=(1, 2, 2))
+        self.dropout_3 = nn.Dropout3d(p=DROPOUT)
 
         # Calculate the flattened feature size after conv and pooling layers
         # Input: (1, BLOCK_SIZE, 32, 32)
         # After conv3d_1 and pool3d_1: (64, BLOCK_SIZE//2, 16, 16)
         # After conv3d_2 and pool3d_2: (32, BLOCK_SIZE//2, 8, 8)
-        self.fc = nn.Linear(32 * (BLOCK_SIZE // 2) * 8 * 8, 1024)
+        # After conv3d_3 and pool3d_3: (32, BLOCK_SIZE//2, 4, 4)
+        self.fc = nn.Linear(32 * (BLOCK_SIZE // 2) * 4 * 4, 1024)
 
     def forward(self, x):
         # x shape: (batch_size, BLOCK_SIZE, 32, 32)
@@ -80,6 +87,11 @@ class VisualNetwork(nn.Module):
         x = self.batch_norm_1(x)
         x = self.pool3d_2(x)
         x = self.dropout_2(x)
+
+        x = F.relu(self.conv3d_3(x))
+        x = self.batch_norm_2(x)
+        x = self.pool3d_3(x)
+        x = self.dropout_3(x)
 
         x = x.view(x.size(0), -1)  # Flatten
         x = F.relu(self.fc(x))
@@ -94,7 +106,11 @@ class AudioNetwork(nn.Module):
 
         self.conv2d_2 = nn.Conv2d(128, 64, kernel_size=(2, 2), padding=(1, 1))
         self.batch_norm_1 = nn.BatchNorm2d(64)
-        self.pool2d_2 = nn.MaxPool2d(kernel_size=(1, 2))
+        self.pool2d_2 = nn.MaxPool2d(kernel_size=(2, 2))
+
+        self.conv2d_3 = nn.Conv2d(64, 32, kernel_size=(2, 2), padding=(1, 1))
+        self.batch_norm_2 = nn.BatchNorm2d(32)
+        self.pool2d_3 = nn.MaxPool2d(kernel_size=(2, 2))
 
         # Dynamically compute the flattened feature size
         with torch.no_grad():
@@ -104,6 +120,9 @@ class AudioNetwork(nn.Module):
             x = F.relu(self.conv2d_2(x))
             x = self.batch_norm_1(x)
             x = self.pool2d_2(x)
+            x = F.relu(self.conv2d_3(x))
+            x = self.batch_norm_2(x)
+            x = self.pool2d_3(x)
             flattened_size = x.numel()
             logging.info(f"AudioNetwork flattened size: {flattened_size}")
 
@@ -127,38 +146,107 @@ class AudioNetwork(nn.Module):
         x = self.pool2d_2(x)
         logging.debug(f"After pool2d_2: {x.shape}")
 
+        x = F.relu(self.conv2d_3(x))
+        logging.debug(f"After conv2d_2: {x.shape}")
+        x = self.batch_norm_2(x)
+        x = self.pool2d_3(x)
+        logging.debug(f"After pool2d_2: {x.shape}")
+
         x = x.view(x.size(0), -1)  # Flatten
         logging.debug(f"After flatten: {x.shape}")
         x = F.relu(self.fc(x))
         logging.debug(f"After fc: {x.shape}")
         return x
 
+# class PretrainingNetwork(nn.Module):
+#     def __init__(self):
+#         super(PretrainingNetwork, self).__init__()
+#         self.fc1 = nn.Linear(2048, 1024)
+#         self.fc2 = nn.Linear(1024, 1)
+#
+#     def forward(self, visual_feat, audio_feat):
+#         x = torch.cat((visual_feat, audio_feat), dim=1)  # Concatenate features
+#         x = F.relu(self.fc1(x))
+#         x = self.fc2(x)
+#         return x
 
+# Using below attention model
 class PretrainingNetwork(nn.Module):
-    def __init__(self):
+    def __init__(self, hidden_dim=1024):
         super(PretrainingNetwork, self).__init__()
-        self.fc1 = nn.Linear(2048, 1024)
+        self.attention = CrossModalAttention(input_dim=1024, hidden_dim=1024, output_dim=1024)
+        self.fc1 = nn.Linear(1024, 1024)
         self.fc2 = nn.Linear(1024, 1)
 
     def forward(self, visual_feat, audio_feat):
-        x = torch.cat((visual_feat, audio_feat), dim=1)  # Concatenate features
-        x = F.relu(self.fc1(x))
+        attended_feat = self.attention(audio_feat, visual_feat)
+        x = F.relu(self.fc1(attended_feat))
         x = self.fc2(x)
         return x
 
 
+class CrossModalAttention(nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim):
+        super(CrossModalAttention, self).__init__()
+        self.query_fc = nn.Linear(input_dim, hidden_dim)
+        self.key_fc = nn.Linear(input_dim, hidden_dim)
+        self.value_fc = nn.Linear(input_dim, hidden_dim)
+        self.output_fc = nn.Linear(hidden_dim, output_dim)  # Match visual feature dimension
+        self.softmax = nn.Softmax(dim=-1)
+
+    def forward(self, audio_feat, visual_feat):
+        query = self.query_fc(visual_feat)
+        key = self.key_fc(audio_feat)
+        value = self.value_fc(audio_feat)
+
+        attention_weights = self.softmax(torch.matmul(query, key.transpose(-2, -1)))
+        attended_audio = torch.matmul(attention_weights, value)
+        attended_audio = self.output_fc(attended_audio)  # Project to 1024
+
+        return attended_audio + visual_feat  # Residual connection
+
+
+# class PretrainingAudioVisualModel(nn.Module):
+#     def __init__(self, num_mfcc_rows, num_mfcc_features=MFCC_FEATURES):
+#         super(PretrainingAudioVisualModel, self).__init__()
+#         self.visual_network = VisualNetwork()
+#         self.audio_network = AudioNetwork(num_mfcc_rows, num_mfcc_features)
+#         self.fusion_network = PretrainingNetwork()
+#
+#     def forward(self, video_input, audio_input):
+#         visual_feat = self.visual_network(video_input)
+#         audio_feat = self.audio_network(audio_input)
+#         output = self.fusion_network(visual_feat, audio_feat)
+#         return output
+
+
 class PretrainingAudioVisualModel(nn.Module):
-    def __init__(self, num_mfcc_rows, num_mfcc_features=MFCC_FEATURES):
+    def __init__(self, num_mfcc_rows, num_mfcc_features=MFCC_FEATURES, hidden_dim=1024):
         super(PretrainingAudioVisualModel, self).__init__()
         self.visual_network = VisualNetwork()
         self.audio_network = AudioNetwork(num_mfcc_rows, num_mfcc_features)
-        self.fusion_network = PretrainingNetwork()
+
+        # Attention module for cross-modal fusion
+        self.attention = CrossModalAttention(input_dim=hidden_dim, hidden_dim=hidden_dim, output_dim=hidden_dim)
+
+        # Output layer
+        self.fc1 = nn.Linear(hidden_dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, 1)
 
     def forward(self, video_input, audio_input):
+        # Extract visual and audio features
         visual_feat = self.visual_network(video_input)
         audio_feat = self.audio_network(audio_input)
-        output = self.fusion_network(visual_feat, audio_feat)
-        return output
+
+        # Apply attention between audio and visual features
+        attended_feat = self.attention(audio_feat, visual_feat)
+
+        # Forward the attended features through the fully connected layers
+        x = F.relu(self.fc1(attended_feat))
+        x = self.fc2(x)
+
+        return x
+
 
 
 # Dataset Definition
@@ -533,8 +621,9 @@ def main():
                     total_test_loss += loss.item() * video_batch.size(0)
                     losses.append(torch.sqrt(loss).item())
 
-                    predictions = torch.sigmoid(outputs)  # Apply sigmoid
-                    predicted_labels = (predictions >= 0.5).long()
+                    # predictions = torch.sigmoid(outputs)  # Apply sigmoid - doesn't really make sense since non-negative values
+                    # predicted_labels = (predictions >= 0.5).long()
+                    predicted_labels = (outputs >= 0.5).long()
 
                     # Store the predicted and true labels for accuracy calculation
                     all_predictions.extend(predicted_labels.cpu().numpy())  # Convert to numpy for accuracy_score
