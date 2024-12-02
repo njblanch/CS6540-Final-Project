@@ -138,12 +138,12 @@ class PretrainingNetwork(nn.Module):
     def __init__(self):
         super(PretrainingNetwork, self).__init__()
         self.fc1 = nn.Linear(2048, 1024)
-        self.fc2 = nn.Linear(1024, 2)
+        self.fc2 = nn.Linear(1024, 1)
 
     def forward(self, visual_feat, audio_feat):
         x = torch.cat((visual_feat, audio_feat), dim=1)  # Concatenate features
         x = F.relu(self.fc1(x))
-        x = F.softmax(self.fc2(x), dim=1)
+        x = self.fc2(x)
         return x
 
 
@@ -277,13 +277,13 @@ class AudioVisualSyncDataset(Dataset):
                     # Randomly determine if synced or not
                     is_desynchronized = random.choice([0, 1])  # 0 = synchronized, 1 = desynchronized
 
-                    # Create the label vector [synchronized, desynchronized]
-                    label = np.zeros(2, dtype=np.float32)
-                    label[is_desynchronized] = 1.0  # Set either synchronized or desynchronized as 1
-
-                    desync_amount = 0
+                    # Create the label
                     if is_desynchronized:
+                        label = np.zeros(1, dtype=np.float32)
                         desync_amount = np.random.choice(self.shift_range)
+                    else:
+                        label = np.ones(1, dtype=np.float32)
+                        desync_amount = 0
 
                     video_block_df = video_clip_df.iloc[random_start_frame : random_start_frame + self.block_size]
                     start_time_ms = (-desync + random_start_frame + desync_amount) * self.frame_duration_ms
@@ -450,7 +450,7 @@ def main():
     logging.info("Model instantiated.")
 
     # Define loss function and optimizer
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.BCEWithLogitsLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
     losses = []
 
@@ -533,12 +533,12 @@ def main():
                     total_test_loss += loss.item() * video_batch.size(0)
                     losses.append(torch.sqrt(loss).item())
 
-                    _, predicted_labels = torch.max(outputs, dim=1)  # Get the predicted class
-                    _, true_labels = torch.max(labels, dim=1)  # Get the true class from one-hot labels
+                    predictions = torch.sigmoid(outputs)  # Apply sigmoid
+                    predicted_labels = (predictions >= 0.5).long()
 
                     # Store the predicted and true labels for accuracy calculation
                     all_predictions.extend(predicted_labels.cpu().numpy())  # Convert to numpy for accuracy_score
-                    all_labels.extend(true_labels.cpu().numpy())
+                    all_labels.extend(labels.cpu().numpy())
 
                 pbar.update(1)
 
