@@ -120,18 +120,23 @@ def load_images_from_directory(directory_path):
     return frames
 
 
-def create_gif(frames_with_flow, output_gif_path, fps=10):
-    # Convert each frame to an image and append it to the list
-    frames_for_gif = [cv2.cvtColor(frame, cv2.COLOR_BGR2RGB) for frame in frames_with_flow]
+def create_gif(frames_with_flow, output_gif_path, total_duration=10):
+    # Convert the frame rate to the duration of each frame (in seconds)
+    num_frames = len(frames_with_flow)
+    print(num_frames)
+    duration_per_frame = total_duration / num_frames
+    duration_per_frame = max(1, duration_per_frame)
+    print(duration_per_frame)
 
-    # Save the frames as a GIF
-    imageio.mimsave(output_gif_path, frames_for_gif, duration=1 / fps)
-
+    # Write the frames to a GIF using imageio
+    imageio.mimwrite(output_gif_path, frames_with_flow, duration=duration_per_frame)
 
 frames = load_images_from_directory("test_frames")
 
 # Visualize the optical flow
 frames_with_flow = visualize_optical_flow(frames, (256, 256))
 
+frames_with_flow = frames_with_flow[0:20]
+
 # Create a GIF
-create_video(frames_with_flow, 'output.mp4', fps=2)
+create_video(frames_with_flow, 'output.mp4', fps=1)

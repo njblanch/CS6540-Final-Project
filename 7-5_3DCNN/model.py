@@ -41,7 +41,7 @@ MFCC_FEATURES = 12  # mfcc_2 to mfcc_13
 NUM_EPOCHS = 20
 BATCH_SIZE = 32
 LEARNING_RATE = 1e-4
-SUBSET_SIZE = 0.2  # Proportion of data to use formerly 0.05
+SUBSET_SIZE = 0.15  # Proportion of data to use formerly 0.05
 
 DROPOUT = 0.5
 

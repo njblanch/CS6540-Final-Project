@@ -15,4 +15,4 @@ module purge
 # Job info
 my_job_header
 
-$HOME/miniconda3/envs/videosync3.10/bin/python evaluate_model.py -v 1
+$HOME/miniconda3/envs/videosync3.10/bin/python evaluate_model.py -v 7
