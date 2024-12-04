@@ -170,7 +170,7 @@ def main():
 
     # Instantiate the model
     model = AudioVisualModel(num_mfcc_rows=fixed_num_mfcc_rows).to(device)
-    model_name = "audio_visual_sync_model_7_best.pth"
+    model_name = "audio_visual_sync_model_5_best.pth"
     model.load_state_dict(torch.load(model_name))
     logging.info("Model instantiated.")
 

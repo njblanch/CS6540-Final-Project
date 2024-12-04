@@ -494,7 +494,11 @@ def main():
 
                 # Variance loss
                 var_loss = variance_regularization(outputs, alpha=alph)
-                loss = mse_loss + var_loss # Full loss
+                if torch.isnan(var_loss):
+                    print("Warning: NaN value detected in variance regularization loss. Using only MSE loss.")
+                    loss = mse_loss
+                else:
+                    loss = mse_loss + var_loss # Full loss
                 loss.backward()
                 optimizer.step()
 
