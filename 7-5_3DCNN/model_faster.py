@@ -71,12 +71,15 @@ class VisualNetwork(nn.Module):
         self.batch_norm_2 = nn.BatchNorm3d(32)
         self.pool3d_3 = nn.MaxPool3d(kernel_size=(1, 2, 2))
         self.dropout_3 = nn.Dropout3d(p=DROPOUT)
+        #TODO: Add layers for fourth conv here, make sure kernel size of pooling is (1,2,2) so we don't lose more optical length
 
         # Calculate the flattened feature size after conv and pooling layers
         # Input: (1, BLOCK_SIZE, 32, 32)
         # After conv3d_1 and pool3d_1: (64, BLOCK_SIZE//2, 16, 16)
         # After conv3d_2 and pool3d_2: (32, BLOCK_SIZE//2, 8, 8)
         # After conv3d_3 and pool3d_3: (32, BLOCK_SIZE//2, 4, 4)
+
+        #TODO: change calculation here
         self.fc = nn.Linear(32 * (BLOCK_SIZE // 2) * 4 * 4, 1024)
 
     def forward(self, x):
@@ -95,6 +98,8 @@ class VisualNetwork(nn.Module):
         x = self.batch_norm_2(x)
         x = self.pool3d_3(x)
         x = self.dropout_3(x)
+
+        #TODO: add call to fourth layers
 
         x = x.view(x.size(0), -1)  # Flatten
         x = F.relu(self.fc(x))
@@ -115,6 +120,8 @@ class AudioNetwork(nn.Module):
         self.batch_norm_2 = nn.BatchNorm2d(32)
         self.pool2d_3 = nn.MaxPool2d(kernel_size=(2, 2))
 
+        #TODO: add fourth conv layer here
+
         # Dynamically compute the flattened feature size
         with torch.no_grad():
             dummy_input = torch.zeros(1, 1, num_mfcc_rows, num_mfcc_features)
@@ -126,6 +133,7 @@ class AudioNetwork(nn.Module):
             x = F.relu(self.conv2d_3(x))
             x = self.batch_norm_2(x)
             x = self.pool2d_3(x)
+            #TODO: add fourth conv call
             flattened_size = x.numel()
             logging.info(f"AudioNetwork flattened size: {flattened_size}")
 
@@ -154,6 +162,8 @@ class AudioNetwork(nn.Module):
         x = self.batch_norm_2(x)
         x = self.pool2d_3(x)
         logging.debug(f"After pool2d_2: {x.shape}")
+
+        #TODO: add fourth conv here
 
         x = x.view(x.size(0), -1)  # Flatten
         logging.debug(f"After flatten: {x.shape}")
