@@ -1,5 +1,3 @@
-# transformer_training.py
-
 import argparse
 import torch
 import torch.nn as nn
@@ -24,8 +22,8 @@ batch_size = 64
 learning_rate = 1e-4
 weight_decay = 1e-5
 
-audio_dim = (118)
-video_dim = (8, 8, 16)
+audio_dim = (60, 118)
+video_dim = (60, 1024)
 output_dim = 1
 max_seq_length = 60 # Changing to 15fps * 4 seconds 225  # 15 fps * 15 seconds
 
